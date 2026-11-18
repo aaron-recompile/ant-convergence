@@ -73,11 +73,36 @@ def hyperliquid(dex,sym):
                     "impact_px":c.get("impactPxs"),"via":"direct"}
     return None
 
+_cg_last=[0.0,None]   # 节流：CoinGecko 免费档限频，最快 5 秒一次
+
+def binance_via_coingecko():
+    now=time.time()
+    if now-_cg_last[0] < 5 and _cg_last[1] is not None:
+        return dict(_cg_last[1])
+    d,_=_get("https://api.coingecko.com/api/v3/derivatives/exchanges/binance_futures?include_tickers=unexpired",timeout=12)
+    if not d: return None
+    for x in d.get("tickers",[]):
+        if x.get("symbol","").upper()=="ANTUSDT":
+            cv=(x.get("converted_volume") or {}).get("usd")
+            r={"last":x.get("last"),"mark":x.get("last"),
+               "index":x.get("index"),"chg24h_pct":x.get("h24_percentage_change"),
+               "basis_pct":x.get("index_basis_percentage"),
+               "bid_ask_spread":x.get("bid_ask_spread"),
+               "funding":x.get("funding_rate"),
+               "oi_usd":x.get("open_interest_usd"),
+               "vol24h_contracts":x.get("h24_volume"),
+               "vol24h_usd":float(cv) if cv else None,
+               "last_traded":x.get("last_traded"),"via":"coingecko"}
+            _cg_last[0]=now; _cg_last[1]=dict(r)
+            return r
+    return None
+
 def binance():
     t,v1=_get("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=ANTUSDT")
     p,v2=_get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=ANTUSDT")
     o,v3=_get("https://fapi.binance.com/fapi/v1/openInterest?symbol=ANTUSDT")
-    if not t or "lastPrice" not in t: return None
+    if not t or "lastPrice" not in t:
+        return binance_via_coingecko()   # 直连被封时自动改走 CoinGecko
     r={"last":float(t["lastPrice"]),"chg24h_pct":float(t["priceChangePercent"]),
        "high24h":float(t["highPrice"]),"low24h":float(t["lowPrice"]),
        "vol24h_usd":float(t["quoteVolume"]),"trades24h":int(t["count"]),"via":v1}

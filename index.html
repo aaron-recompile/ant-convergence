@@ -1,69 +1,70 @@
 <!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ANT 上市日收敛 · Listing-Day Convergence</title>
+<title>ANT</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
 :root{--bg:#0f1116;--card:#171a21;--line:#262a33;--fg:#e9e7e3;--dim:#8b939e;
 --up:#4ca97a;--dn:#cf6a57;--acc:#6fa8d6;--warn:#d4a35a;
 --sans:"IBM Plex Sans","PingFang SC",system-ui,sans-serif;--mono:"IBM Plex Mono",Menlo,monospace;color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.6}
-.wrap{max-width:1140px;margin:0 auto;padding:26px 18px 70px}
-h1{font-size:clamp(19px,3.4vw,26px);font-weight:600;margin:0 0 8px;letter-spacing:-.015em}
-.sub{color:var(--dim);font-size:13.5px;max-width:64ch;margin:0 0 6px}
-.hd{border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px}
-.meta{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:10px;display:flex;gap:16px;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:11px;margin-bottom:16px}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.55}
+.wrap{max-width:1140px;margin:0 auto;padding:24px 18px 56px}
+.hd{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+border-bottom:1px solid var(--line);padding-bottom:13px;margin-bottom:18px}
+h1{font-size:20px;font-weight:600;margin:0;letter-spacing:-.01em}
+.tag{font-family:var(--mono);font-size:11px;color:var(--dim)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:11px;margin-bottom:14px}
 .c{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:13px 15px;min-width:0}
-.c h3{margin:0 0 7px;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:500}
+.c h3{margin:0 0 7px;font-family:var(--mono);font-size:10px;letter-spacing:.09em;
+text-transform:uppercase;color:var(--dim);font-weight:500}
 .px{font-family:var(--mono);font-size:25px;font-weight:600;letter-spacing:-.02em;line-height:1.05}
 .s{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:6px;line-height:1.7}
 .up{color:var(--up)}.dn{color:var(--dn)}.warn{color:var(--warn)}
-.w{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px 18px;margin-bottom:14px}
-.w h3{margin:0 0 11px;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:500}
-canvas{width:100%;height:300px;display:block}
+.c.spot{border-color:#3a4150}
+.w{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:15px 18px;margin-bottom:14px}
+.w h3{margin:0 0 10px;font-family:var(--mono);font-size:10px;letter-spacing:.09em;
+text-transform:uppercase;color:var(--dim);font-weight:500}
+canvas{width:100%;height:320px;display:block}
 .big{font-family:var(--mono);font-size:23px;font-weight:600}
-.note{font-size:11.5px;color:var(--dim);margin-top:8px;line-height:1.65}
-a{color:var(--acc)}
-.lg{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;margin-top:10px}
-.lg i{display:inline-block;width:15px;height:3px;margin-right:6px;vertical-align:3px}
-code{font-family:var(--mono);font-size:11.5px;background:#0b0d11;padding:1px 5px;border-radius:3px}
+.note{font-size:11.5px;color:var(--dim);margin-top:7px}
+.lg{display:flex;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:11px;
+margin-top:10px;color:var(--dim)}
+.lg i{display:inline-block;width:14px;height:3px;margin-right:6px;vertical-align:3px}
+.ft{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:22px;
+padding-top:13px;border-top:1px solid var(--line)}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 </style></head><body><div class="wrap">
 
 <div class="hd">
-<h1>ANT 上市日收敛</h1>
-<p class="sub">Anthropic 上市前永续合约在四个场所的报价，向 Nasdaq 现货收敛的全过程。<b>Pre-IPO 永续在股票挂牌那一刻就不存在了，这个窗口不会再有。</b></p>
-<p class="sub" style="font-size:12.5px">Pre-IPO perpetuals across four venues converging onto Nasdaq spot. The instrument ceases to exist at listing; this window does not repeat.</p>
-<div class="meta"><span id="m1">读取中…</span><span id="m2"></span>
-<span><a href="https://github.com/aaron-recompile/ant-listing-convergence">源码与数据</a></span></div>
+  <h1>ANT · 四个场所</h1>
+  <span class="tag" id="m1">读取中…</span>
+  <span class="tag" id="m2"></span>
 </div>
 
 <div class="grid" id="cards"></div>
 
 <div class="w"><h3>跨场所价差</h3><div id="sp"></div></div>
 
-<div class="w"><h3>收敛过程 · 10 秒分辨率</h3><canvas id="ch"></canvas>
+<div class="w"><h3>走势</h3><canvas id="ch"></canvas>
 <div class="lg">
-<span><i style="background:#d4a35a"></i>币安 ANTUSDT</span>
-<span><i style="background:#6fa8d6"></i>Hyperliquid xyz:ANT</span>
-<span><i style="background:#4ca97a"></i>Kraken PF_ANTXUSD</span>
-<span><i style="background:#fff"></i>Nasdaq ANT 现货</span></div>
+  <span><i style="background:#d4a35a"></i>币安</span>
+  <span><i style="background:#6fa8d6"></i>Hyperliquid</span>
+  <span><i style="background:#4ca97a"></i>Kraken</span>
+  <span><i style="background:#fff"></i>Nasdaq 现货</span>
+</div>
 <div class="note" id="chn"></div></div>
 
-<div class="w"><h3>说明</h3>
-<div class="note" style="font-size:12.5px;line-height:1.85">
-发行条款：825M 股，指示区间 $70–78，2026-11-18 收盘后定价，11-19 于 Nasdaq 开始交易。<br>
-采集：两台机器分工——Mac mini 常驻采 Hyperliquid / Kraken / Nasdaq 现货（<code>ant_*.jsonl</code>），另一台经新加坡出口采币安（<code>binance_*.jsonl</code>，因币安封锁美国 IP）。网页按 10 秒桶合并。开盘前后自动加密至 2 秒。<br>字段含 mark / index / last / bid-ask / 24h OHLC / 成交额 / 未平仓 / 资金费率及预测。<br>
-币安对美国 IP 封锁，数据缺口在 <code>via</code> 字段标注，便于区分「市场无数据」与「采集受阻」。<br>
-<b>仅公开行情数据，不含任何账户、持仓或身份信息。</b> MIT 许可。
-</div></div>
+<div class="ft">
+  Anthropic（ANT）上市前永续合约与 Nasdaq 现货。825M 股，区间 $70–78，2026-11-19 挂牌。<br>
+  <a href="https://github.com/aaron-recompile/ant-convergence">数据与源码</a>
+</div>
 
 </div><script>
 var V=[['binance_ANTUSDT','币安 ANTUSDT','#d4a35a'],
        ['hl_xyz_ANT','Hyperliquid xyz:ANT','#6fa8d6'],
        ['hl_para_ANTH','Hyperliquid para:ANTH','#8b939e'],
        ['kraken_PF_ANTXUSD','Kraken PF_ANTXUSD','#4ca97a'],
-       ['spot_ANT_nasdaq','Nasdaq ANT 现货','#ffffff']];
+       ['spot_ANT_nasdaq','Nasdaq ANT','#ffffff']];
 function px(v){ if(!v) return null; var p=v.mark; if(p==null)p=v.last; if(p==null)p=v.price; return p==null?null:p; }
 function F(x,d){ if(x==null) return '—'; return Number(x).toFixed(d==null?2:d); }
 var S=[];
@@ -71,19 +72,17 @@ var S=[];
 async function load(){
   var files=[];
   try{ files = await (await fetch('data/index.json?'+Date.now())).json(); }
-  catch(e){ files = ['ant_'+new Date().toISOString().slice(0,10)+'.jsonl']; }
-  // 两台机器分工写不同文件：mini 写 ant_*（HL/Kraken/现货），MacBook 写 binance_*
-  // 按 10 秒桶合并，同桶取各源最新值
+  catch(e){ files=['ant_'+new Date().toISOString().slice(0,10)+'.jsonl']; }
   var bucket={};
   for(var i=0;i<files.length;i++){
     try{
       var t = await (await fetch('data/'+files[i]+'?'+Date.now())).text();
-      var lines=t.split('\n');
-      for(var j=0;j<lines.length;j++){
-        if(!lines[j].trim()) continue;
-        var r=JSON.parse(lines[j]);
+      var L=t.split('\n');
+      for(var j=0;j<L.length;j++){
+        if(!L[j].trim()) continue;
+        var r=JSON.parse(L[j]);
         var k=Math.floor(r.ts_epoch/10)*10;
-        if(!bucket[k]) bucket[k]={ts_epoch:k,ts_utc:new Date(k*1000).toISOString().slice(0,19)+'+00:00'};
+        if(!bucket[k]) bucket[k]={ts_epoch:k,ts_utc:new Date(k*1000).toISOString().slice(0,19)};
         for(var f in r){ if(f!=='ts_epoch'&&f!=='ts_utc'&&r[f]) bucket[k][f]=r[f]; }
       }
     }catch(e){}
@@ -96,21 +95,22 @@ async function load(){
 function render(){
   if(!S.length){ document.getElementById('m1').textContent='暂无数据'; return; }
   var last=S[S.length-1];
-  document.getElementById('m1').textContent='最新 '+last.ts_utc.replace('T',' ').slice(0,19)+' UTC';
-  document.getElementById('m2').textContent=S.length.toLocaleString()+' 个采样点';
+  document.getElementById('m1').textContent=last.ts_utc.replace('T',' ')+' UTC';
+  document.getElementById('m2').textContent=S.length.toLocaleString()+' 点';
   var h='', marks=[];
   for(var i=0;i<V.length;i++){
     var k=V[i][0], lab=V[i][1], v=last[k], p=px(v), s='';
     if(p!=null) marks.push([lab,p]);
     if(v){
-      if(v.chg24h_pct!=null) s+='<span class="'+(v.chg24h_pct>=0?'up':'dn')+'">24h '+(v.chg24h_pct>=0?'+':'')+F(v.chg24h_pct)+'%</span><br>';
-      if(v.vol24h_usd) s+='量 $'+(v.vol24h_usd/1e6).toFixed(1)+'M<br>';
-      if(v.oi_contracts) s+='未平仓 '+Math.round(v.oi_contracts).toLocaleString()+'<br>';
+      if(v.chg24h_pct!=null) s+='<span class="'+(v.chg24h_pct>=0?'up':'dn')+'">'+(v.chg24h_pct>=0?'+':'')+F(v.chg24h_pct)+'%</span> 24h<br>';
+      var vol=v.vol24h_usd; if(vol) s+='量 $'+(vol/1e6).toFixed(1)+'M<br>';
+      var oi=v.oi_usd!=null?('$'+(v.oi_usd/1e6).toFixed(0)+'M'):(v.oi_contracts!=null?Math.round(v.oi_contracts).toLocaleString():null);
+      if(oi) s+='未平仓 '+oi+'<br>';
       if(v.funding!=null) s+='资金费 '+(v.funding*100).toFixed(4)+'%<br>';
       if(v.bid&&v.ask) s+='盘口 '+F(v.bid)+' / '+F(v.ask)+'<br>';
-      if(v.state) s+=v.state+'<br>';
-    } else { s='<span class="dn">无数据</span>'; }
-    h+='<div class="c"><h3>'+lab+'</h3><div class="px">'+(p!=null?'$'+F(p):'—')+'</div><div class="s">'+s+'</div></div>';
+    } else { s='<span class="dim">—</span>'; }
+    h+='<div class="c'+(k==='spot_ANT_nasdaq'?' spot':'')+'"><h3>'+lab+'</h3>'+
+       '<div class="px">'+(p!=null?'$'+F(p):'—')+'</div><div class="s">'+s+'</div></div>';
   }
   document.getElementById('cards').innerHTML=h;
 
@@ -119,34 +119,31 @@ function render(){
     var lo=Math.min.apply(null,ps), hi=Math.max.apply(null,ps), sp=(hi/lo-1)*100;
     var loN=marks.filter(function(m){return m[1]===lo;})[0][0];
     var hiN=marks.filter(function(m){return m[1]===hi;})[0][0];
-    var msg = sp<0.5 ? '套利在工作，是真实共识价。'
-            : sp<1.5 ? '价差偏大 — 不同场所的买方结构不同。'
-            : '<span class="warn">价差显著 — 某一侧流动性薄或准入受限。</span>';
     document.getElementById('sp').innerHTML='<div class="big'+(sp>1?' warn':'')+'">'+F(sp)+'%</div>'+
-      '<div class="note">最低 <b>'+loN+'</b> $'+F(lo)+' · 最高 <b>'+hiN+'</b> $'+F(hi)+'<br>'+msg+'</div>';
+      '<div class="note">'+loN+' $'+F(lo)+' &nbsp;→&nbsp; '+hiN+' $'+F(hi)+'</div>';
   }
   draw();
 }
 
 function draw(){
   var cv=document.getElementById('ch'), r=window.devicePixelRatio||1;
-  cv.width=cv.clientWidth*r; cv.height=300*r;
+  cv.width=cv.clientWidth*r; cv.height=320*r;
   var x=cv.getContext('2d'); x.setTransform(r,0,0,r,0,0);
-  var W=cv.clientWidth, H=300, P=46;
+  var W=cv.clientWidth, H=320, P=46;
   x.clearRect(0,0,W,H);
   var K=V.filter(function(v){return v[0]!=='hl_para_ANTH';});
   var all=[];
   for(var i=0;i<S.length;i++) for(var j=0;j<K.length;j++){ var p=px(S[i][K[j][0]]); if(p!=null) all.push(p); }
-  if(all.length<2){ x.fillStyle='#8b939e'; x.font='12px monospace'; x.fillText('采样点不足',P,H/2); return; }
+  if(all.length<2){ x.fillStyle='#8b939e'; x.font='12px monospace'; x.fillText('采样中…',P,H/2); return; }
   var lo=Math.min.apply(null,all)*0.998, hi=Math.max.apply(null,all)*1.002;
   var X=function(i){return P+(W-P-16)*i/(S.length-1);};
-  var Y=function(v){return H-30-(H-30-16)*(v-lo)/((hi-lo)||1);};
+  var Y=function(v){return H-28-(H-28-16)*(v-lo)/((hi-lo)||1);};
   x.strokeStyle='#262a33'; x.lineWidth=1; x.font='10px monospace'; x.fillStyle='#8b939e';
   for(var g=0;g<=5;g++){ var val=lo+(hi-lo)*g/5, y=Y(val);
     x.beginPath(); x.moveTo(P,y); x.lineTo(W-16,y); x.stroke(); x.fillText('$'+val.toFixed(2),4,y+3); }
   for(var m=0;m<K.length;m++){
     var key=K[m][0], col=K[m][2], started=false;
-    x.strokeStyle=col; x.lineWidth=(key==='spot_ANT_nasdaq')?2.4:1.6; x.beginPath();
+    x.strokeStyle=col; x.lineWidth=(key==='spot_ANT_nasdaq')?2.6:1.6; x.beginPath();
     for(var n=0;n<S.length;n++){
       var p2=px(S[n][key]); if(p2==null) continue;
       if(!started){ x.moveTo(X(n),Y(p2)); started=true; } else { x.lineTo(X(n),Y(p2)); }
@@ -154,9 +151,8 @@ function draw(){
     if(started) x.stroke();
   }
   document.getElementById('chn').textContent=
-    S[0].ts_utc.slice(0,10)+' '+S[0].ts_utc.slice(11,16)+' → '+S[S.length-1].ts_utc.slice(11,16)+
-    ' UTC，共 '+S.length.toLocaleString()+' 点';
+    S[0].ts_utc.slice(0,10)+'  '+S[0].ts_utc.slice(11,16)+' → '+S[S.length-1].ts_utc.slice(11,16)+' UTC';
 }
 
-load(); setInterval(load,60000); window.addEventListener('resize',draw);
+load(); setInterval(load,30000); window.addEventListener('resize',draw);
 </script></body></html>
