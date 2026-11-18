@@ -17,8 +17,23 @@ import json,os,sys,time,subprocess,urllib.request,datetime
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 OUT=os.path.join(HERE,"data")
-INTERVAL=10
 SOCKS="127.0.0.1:1086"
+
+# 自动加密采样：按 UTC 时间切换间隔。2026-11-19 Nasdaq 开盘 14:30 UTC（美东 9:30）
+# 大型 IPO 首笔成交通常在美东 10:00–13:00 = 15:00–18:00 UTC
+SCHEDULE=[  # (起UTC时, 止UTC时, 间隔秒, 是否采 para 这个薄盘)
+    (0.0, 13.0, 10, True),    # 常规
+    (13.0,14.5,  3, False),   # 开盘前一小时半
+    (14.5,19.0,  2, False),   # 开盘 → 首笔成交窗口（核心）
+    (19.0,21.5,  5, False),   # 盘中
+    (21.5,24.0, 10, True),    # 收盘后
+]
+def plan(now=None):
+    now=now or datetime.datetime.now(datetime.timezone.utc)
+    h=now.hour+now.minute/60
+    for a,b,iv,para in SCHEDULE:
+        if a<=h<b: return iv,para
+    return 10,True
 
 def _get(url,timeout=8):
     try:
@@ -99,15 +114,18 @@ def spot_ant():
     except Exception:
         return None
 
-def sample():
+def sample(only=None,with_para=True):
+    """only: None=全部 | 'binance' 只采币安 | 'noBinance' 不采币安"""
     ts=datetime.datetime.now(datetime.timezone.utc)
-    return {"ts_utc":ts.isoformat(timespec="seconds"),
-            "ts_epoch":int(ts.timestamp()),
-            "binance_ANTUSDT":binance(),
-            "hl_xyz_ANT":hyperliquid("xyz","xyz:ANT"),
-            "hl_para_ANTH":hyperliquid("para","para:ANTH"),
-            "kraken_PF_ANTXUSD":kraken(),
-            "spot_ANT_nasdaq":spot_ant()}
+    r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp())}
+    if only=="binance":
+        r["binance_ANTUSDT"]=binance(); return r
+    if only!="noBinance": r["binance_ANTUSDT"]=binance()
+    r["hl_xyz_ANT"]=hyperliquid("xyz","xyz:ANT")
+    if with_para: r["hl_para_ANTH"]=hyperliquid("para","para:ANTH")
+    r["kraken_PF_ANTXUSD"]=kraken()
+    r["spot_ANT_nasdaq"]=spot_ant()
+    return r
 
 def line(rec):
     def mk(k):
@@ -122,19 +140,27 @@ def line(rec):
 def main():
     os.makedirs(OUT,exist_ok=True)
     once="--once" in sys.argv
-    print(f"采集启动  间隔 {INTERVAL}s  写入 {OUT}")
-    n=0
+    only=None; prefix="ant"
+    if "--binance-only" in sys.argv: only,prefix="binance","binance"
+    if "--no-binance" in sys.argv:   only="noBinance"
+    iv,para=plan()
+    print(f"采集启动  模式={only or '全部'}  起始间隔 {iv}s  写入 {OUT}/{prefix}_*.jsonl",flush=True)
+    print(f"  自动加密计划(UTC): "+" ".join(f"{a:g}-{b:g}h→{i}s" for a,b,i,_ in SCHEDULE),flush=True)
+    n=0; last_iv=iv
     while True:
+        iv,para=plan()
+        if iv!=last_iv:
+            print(f"  ⏱ 间隔切换 {last_iv}s → {iv}s",flush=True); last_iv=iv
         try:
-            rec=sample()
+            rec=sample(only=only,with_para=para)
             day=rec["ts_utc"][:10]
-            with open(os.path.join(OUT,f"ant_{day}.jsonl"),"a",encoding="utf-8") as f:
+            with open(os.path.join(OUT,f"{prefix}_{day}.jsonl"),"a",encoding="utf-8") as f:
                 f.write(json.dumps(rec,ensure_ascii=False)+"\n")
             n+=1
-            if n%6==1 or once: print(f"  [{n:>5}] {line(rec)}",flush=True)
+            if n%max(1,int(60/iv))==1 or once: print(f"  [{n:>6}] {line(rec)}",flush=True)
         except Exception as e:
             print(f"  ! {e}",flush=True)
         if once: break
-        time.sleep(INTERVAL)
+        time.sleep(iv)
 
 if __name__=="__main__": main()

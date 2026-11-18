@@ -53,7 +53,7 @@ code{font-family:var(--mono);font-size:11.5px;background:#0b0d11;padding:1px 5px
 <div class="w"><h3>说明</h3>
 <div class="note" style="font-size:12.5px;line-height:1.85">
 发行条款：825M 股，指示区间 $70–78，2026-11-18 收盘后定价，11-19 于 Nasdaq 开始交易。<br>
-采集：每 10 秒一条，append-only JSONL。字段含 mark / index / last / bid-ask / 24h OHLC / 成交额 / 未平仓 / 资金费率及预测。<br>
+采集：两台机器分工——Mac mini 常驻采 Hyperliquid / Kraken / Nasdaq 现货（<code>ant_*.jsonl</code>），另一台经新加坡出口采币安（<code>binance_*.jsonl</code>，因币安封锁美国 IP）。网页按 10 秒桶合并。开盘前后自动加密至 2 秒。<br>字段含 mark / index / last / bid-ask / 24h OHLC / 成交额 / 未平仓 / 资金费率及预测。<br>
 币安对美国 IP 封锁，数据缺口在 <code>via</code> 字段标注，便于区分「市场无数据」与「采集受阻」。<br>
 <b>仅公开行情数据，不含任何账户、持仓或身份信息。</b> MIT 许可。
 </div></div>
@@ -72,14 +72,23 @@ async function load(){
   var files=[];
   try{ files = await (await fetch('data/index.json?'+Date.now())).json(); }
   catch(e){ files = ['ant_'+new Date().toISOString().slice(0,10)+'.jsonl']; }
-  var rows=[];
+  // 两台机器分工写不同文件：mini 写 ant_*（HL/Kraken/现货），MacBook 写 binance_*
+  // 按 10 秒桶合并，同桶取各源最新值
+  var bucket={};
   for(var i=0;i<files.length;i++){
     try{
       var t = await (await fetch('data/'+files[i]+'?'+Date.now())).text();
       var lines=t.split('\n');
-      for(var j=0;j<lines.length;j++){ if(lines[j].trim()) rows.push(JSON.parse(lines[j])); }
+      for(var j=0;j<lines.length;j++){
+        if(!lines[j].trim()) continue;
+        var r=JSON.parse(lines[j]);
+        var k=Math.floor(r.ts_epoch/10)*10;
+        if(!bucket[k]) bucket[k]={ts_epoch:k,ts_utc:new Date(k*1000).toISOString().slice(0,19)+'+00:00'};
+        for(var f in r){ if(f!=='ts_epoch'&&f!=='ts_utc'&&r[f]) bucket[k][f]=r[f]; }
+      }
     }catch(e){}
   }
+  var rows=Object.keys(bucket).map(function(k){return bucket[k];});
   rows.sort(function(a,b){return a.ts_epoch-b.ts_epoch;});
   S=rows; render();
 }
