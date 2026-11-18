@@ -101,8 +101,16 @@ async function load(){
 
 function render(){
   if(!S.length){ document.getElementById('m1').textContent='暂无数据'; return; }
-  var last=S[S.length-1];
-  document.getElementById('m1').textContent=last.ts_utc.replace('T',' ')+' UTC';
+  // 两台机器写不同文件，最后一个桶可能只含其中一路 —— 每个场所各取自己最新的非空值
+  var last={}, age={};
+  for(var i=S.length-1;i>=0 && i>S.length-200;i--){
+    for(var j=0;j<V.length;j++){
+      var kk=V[j][0];
+      if(last[kk]===undefined && S[i][kk]){ last[kk]=S[i][kk]; age[kk]=S[i].ts_epoch; }
+    }
+  }
+  var newest=Math.max.apply(null,Object.keys(age).map(function(k){return age[k];}).concat([0]));
+  document.getElementById('m1').textContent=new Date(newest*1000).toISOString().slice(0,19).replace('T',' ')+' UTC';
   document.getElementById('m2').textContent=S.length.toLocaleString()+' 点';
   var h='', marks=[];
   for(var i=0;i<V.length;i++){
@@ -115,7 +123,9 @@ function render(){
       if(oi) s+='未平仓 '+oi+'<br>';
       if(v.funding!=null) s+='资金费 '+(v.funding*100).toFixed(4)+'%<br>';
       if(v.bid&&v.ask) s+='盘口 '+F(v.bid)+' / '+F(v.ask)+'<br>';
-    } else { s='<span class="dim">—</span>'; }
+      var lag=newest-(age[k]||0);
+      if(lag>60) s+='<span class="warn">'+Math.round(lag/60)+' 分钟前</span>';
+    } else { s='—'; }
     h+='<div class="c'+(k==='spot_ANT_nasdaq'?' spot':'')+'"><h3>'+lab+'</h3>'+
        '<div class="px">'+(p!=null?'$'+F(p):'—')+'</div><div class="s">'+s+'</div></div>';
   }
