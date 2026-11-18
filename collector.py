@@ -14,6 +14,7 @@ append-only JSONL 写入 Google Drive（本机会卖，不留本地）。
 每条记录都标注用了哪条路径，便于事后判断数据缺口成因。
 """
 import json,os,sys,time,subprocess,urllib.request,datetime
+from concurrent.futures import ThreadPoolExecutor
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 OUT=os.path.join(HERE,"data")
@@ -35,16 +36,27 @@ def plan(now=None):
         if a<=h<b: return iv,para
     return 10,True
 
+_direct_bad={}   # 按主机记忆：直连失败过就 10 分钟内不再试，省掉每次的超时
+
+def _host(u):
+    try: return u.split("/")[2]
+    except Exception: return u
+
 def _get(url,timeout=8):
-    try:
-        r=urllib.request.Request(url,headers={"User-Agent":"ant-research"})
-        return json.loads(urllib.request.urlopen(r,timeout=timeout).read().decode()),"direct"
-    except Exception:
-        pass
+    h=_host(url); skip = time.time()-_direct_bad.get(h,0) < 600
+    if not skip:
+        try:
+            r=urllib.request.Request(url,headers={"User-Agent":"ant-research"})
+            return json.loads(urllib.request.urlopen(r,timeout=timeout).read().decode()),"direct"
+        except Exception:
+            _direct_bad[h]=time.time()
     try:
         out=subprocess.run(["curl","-s","-m",str(timeout),"--socks5-hostname",SOCKS,url],
                            capture_output=True,timeout=timeout+4).stdout.decode()
-        return json.loads(out),"socks"
+        d=json.loads(out)
+        if isinstance(d,dict) and d.get("code")==0 and "restricted location" in str(d.get("msg","")):
+            return None,"geo"
+        return d,"socks"
     except Exception:
         return None,"fail"
 
@@ -97,11 +109,19 @@ def binance_via_coingecko():
             return r
     return None
 
+_bn_blocked=[0.0]   # 直连被封的记忆；10 分钟后重试一次
+
 def binance():
-    t,v1=_get("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=ANTUSDT")
-    p,v2=_get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=ANTUSDT")
-    o,v3=_get("https://fapi.binance.com/fapi/v1/openInterest?symbol=ANTUSDT")
+    if time.time()-_bn_blocked[0] < 600:
+        return binance_via_coingecko()
+    B="https://fapi.binance.com/fapi/v1/"
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        ft=ex.submit(_get,B+"ticker/24hr?symbol=ANTUSDT",6)
+        fp=ex.submit(_get,B+"premiumIndex?symbol=ANTUSDT",6)
+        fo=ex.submit(_get,B+"openInterest?symbol=ANTUSDT",6)
+        t,v1=ft.result(); p,v2=fp.result(); o,v3=fo.result()
     if not t or "lastPrice" not in t:
+        _bn_blocked[0]=time.time()
         return binance_via_coingecko()   # 直连被封时自动改走 CoinGecko
     r={"last":float(t["lastPrice"]),"chg24h_pct":float(t["priceChangePercent"]),
        "high24h":float(t["highPrice"]),"low24h":float(t["lowPrice"]),
@@ -110,6 +130,61 @@ def binance():
                     "funding":float(p["lastFundingRate"])})
     if o: r["oi_contracts"]=float(o["openInterest"])
     return r
+
+# ── 次级场所：带节流缓存，最快 15 秒一次，不拖慢加密时的主循环 ──
+_cache={}
+def _throttled(key,fn,every=15):
+    now=time.time(); c=_cache.get(key)
+    if c and now-c[0]<every: return dict(c[1]) if c[1] else None
+    v=None
+    try: v=fn()
+    except Exception: v=None
+    if v is not None: _cache[key]=(now,dict(v))
+    elif c: return dict(c[1]) if c[1] else None
+    else: _cache[key]=(now,None)
+    return v
+
+def _gate():
+    d,_=_get("https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=ANT_USDT")
+    if not isinstance(d,list) or not d: return None
+    t=d[0]; f=lambda k: float(t[k]) if t.get(k) not in (None,"") else None
+    return {"mark":f("mark_price"),"last":f("last"),"index":f("index_price"),
+            "bid":f("highest_bid"),"ask":f("lowest_ask"),
+            "high24h":f("high_24h"),"low24h":f("low_24h"),
+            "chg24h_pct":f("change_percentage"),
+            "vol24h_usd":f("volume_24h_quote"),"oi_contracts":f("total_size"),
+            "funding":f("funding_rate"),"funding_pred":f("funding_rate_indicative"),
+            "via":"direct"}
+
+def _bitget():
+    d,_=_get("https://api.bitget.com/api/v2/mix/market/ticker?symbol=ANTUSDT&productType=USDT-FUTURES")
+    rows=(d or {}).get("data") or []
+    if not rows: return None
+    t=rows[0]; f=lambda k: float(t[k]) if t.get(k) not in (None,"") else None
+    cp=f("change24h")
+    return {"mark":f("markPrice"),"last":f("lastPr"),"index":f("indexPrice"),
+            "bid":f("bidPr"),"ask":f("askPr"),"bid_size":f("bidSz"),"ask_size":f("askSz"),
+            "high24h":f("high24h"),"low24h":f("low24h"),"open24h":f("open24h"),
+            "chg24h_pct":cp*100 if cp is not None else None,
+            "vol24h_usd":f("usdtVolume"),"oi_contracts":f("holdingAmount"),
+            "funding":f("fundingRate"),"via":"direct"}
+
+def _kucoin():
+    d,_=_get("https://api-futures.kucoin.com/api/v1/contracts/ANTUSDTM")
+    t=(d or {}).get("data") or {}
+    if not t: return None
+    f=lambda k: float(t[k]) if t.get(k) not in (None,"") else None
+    cp=f("priceChgPct")
+    return {"mark":f("markPrice"),"last":f("lastTradePrice"),"index":f("indexPrice"),
+            "high24h":f("highPrice"),"low24h":f("lowPrice"),
+            "chg24h_pct":cp*100 if cp is not None else None,
+            "vol24h_usd":f("turnoverOf24h"),"oi_contracts":f("openInterest"),
+            "funding":f("fundingFeeRate"),"funding_pred":f("predictedFundingFeeRate"),
+            "status":t.get("status"),"via":"direct"}
+
+def gate():   return _throttled("gate",_gate)
+def bitget(): return _throttled("bitget",_bitget)
+def kucoin(): return _throttled("kucoin",_kucoin)
 
 def kraken():
     d,_=_get("https://futures.kraken.com/derivatives/api/v3/tickers")
@@ -145,11 +220,17 @@ def sample(only=None,with_para=True):
     r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp())}
     if only=="binance":
         r["binance_ANTUSDT"]=binance(); return r
-    if only!="noBinance": r["binance_ANTUSDT"]=binance()
-    r["hl_xyz_ANT"]=hyperliquid("xyz","xyz:ANT")
-    if with_para: r["hl_para_ANTH"]=hyperliquid("para","para:ANTH")
-    r["kraken_PF_ANTXUSD"]=kraken()
-    r["spot_ANT_nasdaq"]=spot_ant()
+    jobs=[("hl_xyz_ANT",lambda: hyperliquid("xyz","xyz:ANT")),
+          ("kraken_PF_ANTXUSD",kraken),
+          ("spot_ANT_nasdaq",spot_ant),
+          ("gate_ANT_USDT",gate),("bitget_ANTUSDT",bitget),("kucoin_ANTUSDTM",kucoin)]
+    if only!="noBinance": jobs.insert(0,("binance_ANTUSDT",binance))
+    if with_para: jobs.append(("hl_para_ANTH",lambda: hyperliquid("para","para:ANTH")))
+    with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        futs={k:ex.submit(fn) for k,fn in jobs}
+        for k,f in futs.items():
+            try: r[k]=f.result(timeout=12)
+            except Exception: r[k]=None
     return r
 
 def line(rec):

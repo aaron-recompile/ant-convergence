@@ -36,7 +36,7 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 </style></head><body><div class="wrap">
 
 <div class="hd">
-  <h1>ANT · 四个场所</h1>
+  <h1>ANT · 七个场所</h1>
   <span class="tag" id="m1">读取中…</span>
   <span class="tag" id="m2"></span>
 </div>
@@ -50,6 +50,9 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
   <span><i style="background:#d4a35a"></i>币安</span>
   <span><i style="background:#6fa8d6"></i>Hyperliquid</span>
   <span><i style="background:#4ca97a"></i>Kraken</span>
+  <span><i style="background:#b48ead"></i>Gate</span>
+  <span><i style="background:#5fb3b3"></i>Bitget</span>
+  <span><i style="background:#c08552"></i>KuCoin</span>
   <span><i style="background:#fff"></i>Nasdaq 现货</span>
 </div>
 <div class="note" id="chn"></div></div>
@@ -62,9 +65,13 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 </div><script>
 var V=[['binance_ANTUSDT','币安 ANTUSDT','#d4a35a'],
        ['hl_xyz_ANT','Hyperliquid xyz:ANT','#6fa8d6'],
-       ['hl_para_ANTH','Hyperliquid para:ANTH','#8b939e'],
        ['kraken_PF_ANTXUSD','Kraken PF_ANTXUSD','#4ca97a'],
+       ['gate_ANT_USDT','Gate ANT_USDT','#b48ead'],
+       ['bitget_ANTUSDT','Bitget ANTUSDT','#5fb3b3'],
+       ['kucoin_ANTUSDTM','KuCoin ANTUSDTM','#c08552'],
+       ['hl_para_ANTH','Hyperliquid para:ANTH','#8b939e'],
        ['spot_ANT_nasdaq','Nasdaq ANT','#ffffff']];
+var THIN={'hl_para_ANTH':1};
 function px(v){ if(!v) return null; var p=v.mark; if(p==null)p=v.last; if(p==null)p=v.price; return p==null?null:p; }
 function F(x,d){ if(x==null) return '—'; return Number(x).toFixed(d==null?2:d); }
 var S=[];
@@ -131,7 +138,7 @@ function draw(){
   var x=cv.getContext('2d'); x.setTransform(r,0,0,r,0,0);
   var W=cv.clientWidth, H=320, P=46;
   x.clearRect(0,0,W,H);
-  var K=V.filter(function(v){return v[0]!=='hl_para_ANTH';});
+  var K=V.filter(function(v){return !THIN[v[0]];});
   var all=[];
   for(var i=0;i<S.length;i++) for(var j=0;j<K.length;j++){ var p=px(S[i][K[j][0]]); if(p!=null) all.push(p); }
   if(all.length<2){ x.fillStyle='#8b939e'; x.font='12px monospace'; x.fillText('采样中…',P,H/2); return; }
