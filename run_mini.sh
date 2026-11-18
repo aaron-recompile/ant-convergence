@@ -5,7 +5,7 @@ cd "$(dirname "$0")" || exit 1
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # 采集器（若未在跑则拉起）
-MODE="${COLLECT_MODE:---no-binance}"
+MODE="${COLLECT_MODE-}"   # 默认全量；币安走直连→CoinGecko 自动回退
 pgrep -f "collector.py" >/dev/null || nohup python3 collector.py $MODE >> collector.log 2>&1 &
 
 # 每 5 分钟 commit+push 一次
@@ -18,6 +18,6 @@ while true; do
         commit -q -m "data: $(date -u +%Y-%m-%dT%H:%MZ) $(wc -l < data/ant_$(date -u +%F).jsonl 2>/dev/null | tr -d ' ') samples" 2>/dev/null
     git push -q origin main 2>>push.log || echo "push failed $(date -u +%H:%M)" >> push.log
   fi
-  MODE="${COLLECT_MODE:---no-binance}"
+  MODE="${COLLECT_MODE-}"   # 默认全量；币安走直连→CoinGecko 自动回退
 pgrep -f "collector.py" >/dev/null || nohup python3 collector.py $MODE >> collector.log 2>&1 &
 done
