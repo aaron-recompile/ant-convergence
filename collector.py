@@ -43,21 +43,27 @@ def _host(u):
     except Exception: return u
 
 def _get(url,timeout=8):
-    h=_host(url); skip = time.time()-_direct_bad.get(h,0) < 600
+    """直连优先。只有当 SOCKS 确实能替代时，才记住这个主机直连不通并跳过它。
+    没有 SOCKS 的机器（如 mini）永远继续试直连——否则一次偶发超时会静默拉黑 10 分钟。"""
+    h=_host(url)
+    skip = time.time()-_direct_bad.get(h,0) < 600
+    direct_failed=False
     if not skip:
         try:
             r=urllib.request.Request(url,headers={"User-Agent":"ant-research"})
             return json.loads(urllib.request.urlopen(r,timeout=timeout).read().decode()),"direct"
         except Exception:
-            _direct_bad[h]=time.time()
+            direct_failed=True
     try:
         out=subprocess.run(["curl","-s","-m",str(timeout),"--socks5-hostname",SOCKS,url],
                            capture_output=True,timeout=timeout+4).stdout.decode()
         d=json.loads(out)
         if isinstance(d,dict) and d.get("code")==0 and "restricted location" in str(d.get("msg","")):
             return None,"geo"
+        if direct_failed: _direct_bad[h]=time.time()   # 仅在 socks 成功时才拉黑直连
         return d,"socks"
     except Exception:
+        _direct_bad.pop(h,None)                        # socks 也不通 → 不拉黑，下次继续试直连
         return None,"fail"
 
 def _post_hl(dex,timeout=8):
