@@ -16,6 +16,7 @@
   *_frac   比率（0.1213 表示 +12.13%）
 拿不准的口径同时存原值与换算，并在 data/数据说明.md 里注明未核实。
 """
+import calendar
 import json, os, sys, time, calendar, subprocess, threading, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -543,6 +544,81 @@ def emit(rec):
             f.flush(); os.fsync(f.fileno())
 
 
+# ── 常驻常量自检 ─────────────────────────────────────────────────
+# 为什么要常驻而不是留个对账脚本：`const_audit.py` 是一次性脚本，**要人去跑**，
+# 只在有人想起来时才能发现问题。另一个会话的 SPAN_REF 是在采集循环里每 60 条自己比，
+# 偏出就在日志里喊 —— **那种在无人看的时候也有效**。本块照那个形式做。
+#
+# 查三件事，按危害从大到小：
+#   1. TRADING_DAY 是否还是今天。**这条最紧**：它是硬编码字符串，
+#      所有输出文件名都由它拼出来。进程若跨过午夜仍在跑，
+#      会把新一天的数据继续追加到旧一天的文件里 —— 数据没丢，但归属错了，
+#      而且因为文件一直在长，看起来完全正常。
+#   2. ET→UTC 偏移是否与该日的美东夏令时状态一致。
+#      2026-11-19 是 EST（DST 于 11/1 结束）故 18000；夏令时期间应为 14400。
+#      这个偏移用在 nasdaq chart 的时间戳修正上（见 7.11 / 数据说明 2.x），
+#      错了会让整条分钟线系统性偏移 1 小时。
+#   3. REGULAR_OPEN / REGULAR_CLOSE / POST_CLOSE 是否能由 TRADING_DAY + 偏移推出来。
+#      它们决定 session 判定与收盘 ±600s 的密集采样窗口中心。
+#
+# 不自动改任何常量：静默自我修正会让「哪天的数据按哪套常量采的」无法追溯。
+# 只在日志里喊，由人决定。
+
+def _us_eastern_is_dst(y, m, d):
+    """美东夏令时：3 月第二个周日起，11 月第一个周日止（均 2:00 本地）。
+    只按日期判，边界那两天的小时级精度对本用途足够（采集跨不过那两天的 2:00）。"""
+    if m < 3 or m > 11:
+        return False
+    if 3 < m < 11:
+        return True
+    # 该月 1 日是周几（0=周一 … 6=周日）
+    wd_first = calendar.weekday(y, m, 1)
+    first_sunday = 1 + ((6 - wd_first) % 7)
+    if m == 3:
+        return d >= first_sunday + 7      # 第二个周日
+    return d < first_sunday               # 11 月：第一个周日当天起即为 EST
+
+
+def audit_constants(now=None):
+    """返回问题列表（空列表 = 全部对得上）。只读，不改任何常量。"""
+    now = now if now is not None else now_s()
+    probs = []
+
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    if today != TRADING_DAY:
+        probs.append("TRADING_DAY=%s 但当前 UTC 日期是 %s —— "
+                     "输出文件名由 TRADING_DAY 拼出，新一天的数据正在写进旧一天的文件。"
+                     "必须停掉本进程、让守护用新的 TRADING_DAY 拉起。" % (TRADING_DAY, today))
+
+    y, m, d = [int(x) for x in TRADING_DAY.split("-")]
+    want_off = 14400 if _us_eastern_is_dst(y, m, d) else 18000
+    if ET_TO_UTC_OFFSET != want_off:
+        probs.append("ET_TO_UTC_OFFSET=%d 但 %s 应为 %d（%s）—— "
+                     "nasdaq chart 的分钟时间戳会系统性偏移 %d 秒。"
+                     % (ET_TO_UTC_OFFSET, TRADING_DAY, want_off,
+                        "EDT 夏令时" if want_off == 14400 else "EST 标准时",
+                        abs(ET_TO_UTC_OFFSET - want_off)))
+
+    base = calendar.timegm((y, m, d, 0, 0, 0, 0, 0, 0))
+    for name, val, et_h, et_m in (("REGULAR_OPEN", REGULAR_OPEN, 9, 30),
+                                  ("REGULAR_CLOSE", REGULAR_CLOSE, 16, 0),
+                                  ("POST_CLOSE", POST_CLOSE, 20, 0)):
+        want = base + (et_h * 3600 + et_m * 60) + want_off
+        if val != want:
+            probs.append("%s=%d 但由 %s + %d 推出应为 %d（差 %+d 秒）"
+                         % (name, val, TRADING_DAY, want_off, want, val - want))
+    return probs
+
+
+def log_constant_audit(tag):
+    probs = audit_constants()
+    if probs:
+        print("[%s] ***** 常量自检失败（%s）*****" % (iso(now_s()), tag), flush=True)
+        for x in probs:
+            print("[%s]   ! %s" % (iso(now_s()), x), flush=True)
+    return probs
+
+
 def loop_quote():
     """快路线程：密集的 Nasdaq 现货序列。收盘前后 10 分钟加密到 2 秒。"""
     n = 0
@@ -555,6 +631,7 @@ def loop_quote():
             if n % 100 == 0:
                 print("[%s] quote n=%d best=%s" %
                       (rec["ts"], n, (rec.get("best") or {}).get("price_usd")), flush=True)
+                log_constant_audit("每 100 条")
         except Exception as e:
             print("[%s] ERR quote %s: %s" % (iso(now_s()), type(e).__name__, e), flush=True)
         t = now_s()
@@ -630,6 +707,7 @@ def loop_close():
 
 
 def main():
+    log_constant_audit("启动")
     for fn in (loop_quote, loop_multi):
         th = threading.Thread(target=fn, daemon=True)
         th.start()
