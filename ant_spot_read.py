@@ -208,10 +208,20 @@ def archive_integrity(now=None):
             ln = ln.strip()
             if ln and not _is_conflict_marker(ln):
                 repo_lines.append(ln)
-        for ln in open(ap, errors="replace"):
-            ln = ln.strip()
-            if ln:
-                arch.add(ln)
+        # **归档侧 = 归档文件 ∪ 抢救档。** 这一点初版漏了，而且是 `--simulate-backfill`
+        # 证伪出来的，不是推理出来的：
+        # 回填会把抢救档那 11 行写进仓内，而它们并不在 `~/ant-spot-archive/spot_*.jsonl` 里
+        # —— 它们在单独的 `recovered_from_autostash_*.jsonl` 里。于是「仓内每行都在归档里」
+        # 对这 11 行不成立，回填后这条不变量会红。
+        # 7.8 本来就写明「完整序列 = 归档文件 + 抢救文件」，是我在实现时只比了前者。
+        # **所以这条断言今天也是错的，只是还没被触发** —— 它等着回填那天才炸。
+        for sp in (ap, RECOVERED):
+            if not os.path.exists(sp):
+                continue
+            for ln in open(sp, errors="replace"):
+                ln = ln.strip()
+                if ln:
+                    arch.add(ln)
 
         def age(ln):
             try:
@@ -234,7 +244,8 @@ def archive_integrity(now=None):
             "missing_total": len(missing),
             "missing_stale": len(stale_missing),                   # ← 必须是 0
             "missing_recent": len(missing) - len(stale_missing),   # 还没轮到，正常
-            "archive_only": len(arch - set(repo_lines)),           # ← 仅信息
+            # 仅信息：归档侧有而仓内没有 = autostash 已造成的损失（含已抢救出来的）
+            "archive_only": len(arch - set(repo_lines)),
         }
     return out
 
@@ -563,6 +574,103 @@ def selftest():
     return ok
 
 
+def simulate_backfill(verbose=True):
+    """模拟「公开仓按归档回填、autostash 的洞被补上」之后，全套自测是否仍然全绿。
+
+    **为什么需要这个模式。** 7.14 里我把 R1 从「断言缺陷存在」改成了断言不变量，
+    理由是「不变量在 bug 修好前后都成立」。但那只是**推理**。
+    按本项目自己定的标准 —— 断言必须被**证明**会咬（`--negative`）——
+    那么「修好之后不会变红」同样该被证明，不能只靠我说它成立。
+
+    做法：建临时目录，把仓内两个文件替换成「仓内 ∪ 归档 ∪ 抢救档」（即洞被填平、
+    `archive_only` 归零的状态），把 REPO 指过去，跑全套 `selftest()`，要求 rc=0。
+    只读真实文件、只写临时目录，不碰 `data/`、不碰 git、不碰采集进程。
+    """
+    import shutil as _sh
+    import tempfile as _tf
+
+    _repo, _arch = REPO, ARCHIVE
+    _ss, _bs, _cs = list(SPOT_SOURCES), list(BAR_SOURCES), list(CLOSE_SOURCES)
+    tmp = _tf.mkdtemp(prefix="simulate_backfill_")
+    stats = {}
+    try:
+        for name, srcs in (
+            ("spot_%s.jsonl" % DAY,
+             [os.path.join(_repo, "spot_%s.jsonl" % DAY),
+              os.path.join(_arch, "spot_%s.jsonl" % DAY),
+              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)]),
+            ("minbars_%s.jsonl" % DAY,
+             [os.path.join(_repo, "minbars_%s.jsonl" % DAY),
+              os.path.join(_arch, "minbars_%s.jsonl" % DAY),
+              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)]),
+        ):
+            seen, out = set(), []
+            n_repo = 0
+            for k, sp in enumerate(srcs):
+                if not os.path.exists(sp):
+                    continue
+                for ln in open(sp, errors="replace"):
+                    ln = ln.strip()
+                    if not ln or _is_conflict_marker(ln):
+                        continue
+                    if k == 0:
+                        n_repo += 1
+                    if ln in seen:
+                        continue
+                    seen.add(ln)
+                    out.append(ln)
+            # 回填只按形状收该文件的记录，混装的抢救档不会把 bar 塞进 spot 文件
+            want_bar = name.startswith("minbars")
+            kept = []
+            for ln in out:
+                try:
+                    d = json.loads(ln)
+                except Exception:
+                    continue
+                if is_bar(d) == want_bar:
+                    kept.append(ln)
+            with open(os.path.join(tmp, name), "w") as f:
+                f.write("\n".join(kept) + "\n")
+            stats[name] = {"原仓内": n_repo, "回填后": len(kept),
+                           "补入": len(kept) - n_repo}
+
+        for n in ("close_%s.json" % DAY,):
+            sp = os.path.join(_repo, n)
+            if os.path.exists(sp):
+                _sh.copy(sp, os.path.join(tmp, n))
+
+        globals()["REPO"] = tmp
+        globals()["SPOT_SOURCES"] = [os.path.join(tmp, "spot_%s.jsonl" % DAY),
+                                     os.path.join(_arch, "spot_%s.jsonl" % DAY),
+                                     os.path.join(_arch,
+                                                  "recovered_from_autostash_%s.jsonl" % DAY)]
+        globals()["BAR_SOURCES"] = [os.path.join(tmp, "minbars_%s.jsonl" % DAY),
+                                    os.path.join(_arch, "minbars_%s.jsonl" % DAY),
+                                    os.path.join(_arch,
+                                                 "recovered_from_autostash_%s.jsonl" % DAY)]
+        globals()["CLOSE_SOURCES"] = [os.path.join(tmp, "close_%s.json" % DAY),
+                                      os.path.join(_arch, "close_%s.json" % DAY)]
+
+        print("== simulate backfill：假设公开仓已按归档回填，全套自测必须仍然全绿 ==")
+        for n, v in stats.items():
+            print("  %s  原仓内 %d → 回填后 %d（补入 %d）"
+                  % (n, v["原仓内"], v["回填后"], v["补入"]))
+        ai = archive_integrity()
+        print("  回填后 archive_only（autostash 已造成的损失）: %s"
+              % {k.split("_")[0]: v.get("archive_only") for k, v in ai.items()})
+        ok = selftest()
+        print("== %s ==" % ("BACKFILL SIM PASS（修好缺陷后断言不会变红）"
+                            if ok else "回填后有 FAIL —— 说明我的断言仍在反对修复"))
+        return ok
+    finally:
+        globals()["REPO"] = _repo
+        globals()["ARCHIVE"] = _arch
+        globals()["SPOT_SOURCES"] = _ss
+        globals()["BAR_SOURCES"] = _bs
+        globals()["CLOSE_SOURCES"] = _cs
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 def negative_test():
     """反向测试：逐个改坏精确期望值，要求自测**必须 FAIL**。
 
@@ -653,6 +761,8 @@ def negative_test():
 
 
 if __name__ == "__main__":
+    if "--simulate-backfill" in sys.argv:
+        sys.exit(0 if simulate_backfill() else 1)
     if "--negative" in sys.argv:
         sys.exit(0 if negative_test() else 1)
     if "--selftest" in sys.argv:
