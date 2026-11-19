@@ -270,6 +270,17 @@ def spot_ant():
         if r.get("traded") and r.get("price"): return r
     return first
 
+# ── 资金费归一化 ────────────────────────────────────────────────
+# 各场所口径不同，不折算就不能比较。已逐个实测（2026-11-18）：
+#   binance   fundingIntervalHours=8，lastFundingRate 是比率
+#   binance 走 CoinGecko 时 funding_rate 是【百分数】→ 与直连差 100 倍
+#   hyperliquid  每 1 小时
+#   kraken    fundingRate 是绝对值（价格单位），relativeFundingRate 才是比率/1h
+#   gate funding_interval=28800s / bitget ratePeriod=8 / kucoin granularity=28800000ms
+FUND_HRS={"binance_ANTUSDT":8,"hl_xyz_ANT":1,"hl_para_ANTH":1,
+          "kraken_PF_ANTXUSD":1,"gate_ANT_USDT":8,
+          "bitget_ANTUSDT":8,"kucoin_ANTUSDTM":8}
+
 def norm_funding(key,v):
     """原始值原样保留；另写 funding_8h（每8小时比率）和 funding_apr（年化）。"""
     if not isinstance(v,dict) or key not in FUND_HRS: return v
