@@ -668,12 +668,33 @@ def audit_constants(now=None):
     return probs
 
 
-def log_constant_audit(tag):
+def log_constant_audit(tag, quiet_ok=True):
+    """常量自检并写日志。
+
+    **`quiet_ok=False` 时即使全对也打印一行 —— 这是刻意的，不是啰嗦。**
+
+    初版无论如何都只在「有问题」时才出声，于是日志里的沉默是**二义的**：
+    「检查跑了、一切正常」和「这段代码根本没在跑」长得一模一样。
+    另一个会话正是栽在这上面 —— 他 `grep -c "书跨度偏离基准"` 得到 0，
+    那不是「跨度一直正常」而是「那段代码没在跑」。
+
+    更直接的后果：本路 7.27 的 A 级判据拿「`spot.log` 里出现过常驻自检」
+    当「新代码进了运行时」的指纹。初版那个写法下，**重启成功后这行字也不会出现**，
+    于是 A 级会在重启成功的情况下 FAIL —— 一个假阴性，而且它会被读成「重启没生效」。
+
+    所以：**启动时必发一行正向心跳**（`quiet_ok=False`），
+    之后每 100 条的周期检查保持安静（`quiet_ok=True`），只有出问题才喊。
+    一次心跳足以让沉默不再二义；周期性刷屏会让人忽略日志（见 7.22.1）。
+    """
     probs = audit_constants()
     if probs:
         print("[%s] ***** 常量自检失败（%s）*****" % (iso(now_s()), tag), flush=True)
         for x in probs:
             print("[%s]   ! %s" % (iso(now_s()), x), flush=True)
+    elif not quiet_ok:
+        print("[%s] 常量自检通过（%s）：TRADING_DAY=%s 收盘=%s ET偏移=%d"
+              % (iso(now_s()), tag, TRADING_DAY, iso(REGULAR_CLOSE), ET_TO_UTC_OFFSET),
+              flush=True)
     return probs
 
 
@@ -765,7 +786,7 @@ def loop_close():
 
 
 def main():
-    log_constant_audit("启动")
+    log_constant_audit("启动", quiet_ok=False)
     for fn in (loop_quote, loop_multi):
         th = threading.Thread(target=fn, daemon=True)
         th.start()
