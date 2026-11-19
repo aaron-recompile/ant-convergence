@@ -224,6 +224,8 @@ def _spot_nasdaq():
     p=(dd.get("primaryData") or {})
     if not dd.get("symbol"): return None
     px=_f(p.get("lastSalePrice"))
+    if px is not None and _f(p.get("volume")) in (None,0) and abs(px-83.0)<1e-9:
+        px=None                       # 同一个占位陷阱，交易所接口偶尔也会这样回
     return {"price":px,"bid":_f(p.get("bidPrice")),"ask":_f(p.get("askPrice")),
             "bid_size":_f(p.get("bidSize")),"ask_size":_f(p.get("askSize")),
             "vol":_f(p.get("volume")),"chg_pct":_f((p.get("percentageChange") or "").replace("%","")),
@@ -236,11 +238,18 @@ def _spot_yahoo():
     r=((d or {}).get("chart") or {}).get("result") or []
     if not r: return None
     m=r[0].get("meta") or {}
-    px=m.get("regularMarketPrice")
-    return {"price":px,"prev_close":m.get("chartPreviousClose"),
-            "vol":m.get("regularMarketVolume"),"state":m.get("marketState"),
-            "day_high":m.get("regularMarketDayHigh"),"day_low":m.get("regularMarketDayLow"),
-            "src":"yahoo","via":via,"traded":px is not None}
+    px=m.get("regularMarketPrice"); pc=m.get("chartPreviousClose")
+    hi=m.get("regularMarketDayHigh"); lo=m.get("regularMarketDayLow")
+    vol=m.get("regularMarketVolume")
+    # 首笔成交前 Yahoo 把发行价当占位回来：price=high=low=prevClose、量为空。
+    # 不设这道防线就会把 $83 记成「首笔成交」，而那正是本研究最关键的一条数据。
+    placeholder = (px is not None and pc is not None and px==pc
+                   and (hi is None or hi==px) and (lo is None or lo==px)
+                   and not vol)
+    return {"price":None if placeholder else px,"quoted":px,"prev_close":pc,
+            "vol":vol,"state":m.get("marketState"),"day_high":hi,"day_low":lo,
+            "placeholder":placeholder,
+            "src":"yahoo","via":via,"traded":bool(px is not None and not placeholder)}
 
 def _spot_cnbc():
     """注意：首笔成交前 CNBC 回的 last 是发行价 $83（上一日收盘占位）。
