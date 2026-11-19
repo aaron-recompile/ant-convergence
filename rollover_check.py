@@ -88,6 +88,35 @@ def lines_days(p):
     return out
 
 
+def _pids_in(path, collector="ant_spot.py"):
+    """文件里**指定 collector** 的 pid 集合。本路每条记录自 18:38:55Z 起带 pid（7.6）。
+
+    **必须按 collector 分组，不能只数 pid。** 实测本日文件里有 3 个 pid：
+        55756 / 13784  collector=ant_spot.py        ← 两代采集器
+        12938          collector=spot_close_fix.py  ← 一次性的收盘定稿器
+    **第三个是合法的另一个写入者，不是双写。**
+    若判据写成「文件里只有一个 pid」，那么任何有收盘定稿记录的交易日都会被误判成双写
+    —— 一个假 FAIL，而且会把人引向「去杀掉多余的进程」这种错误动作。
+
+    这件事是**去看了数据才发现的**，不是从我对文件的印象里推出来的：
+    我原以为文件里的 pid 只会来自采集器。
+    """
+    out = set()
+    if not os.path.exists(path):
+        return out
+    for ln in io.open(path, errors="replace"):
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        if d.get("pid") is not None and d.get("collector") == collector:
+            out.add(d["pid"])
+    return out
+
+
 def report(stage, checks, failure_modes):
     bad = [n for n, ok, _ in checks if not ok]
     print("== 第 %s 级核对 @ %s ==" % (stage, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
@@ -173,7 +202,31 @@ def stage_b():
     a2, b2 = size(fa), size(fb)
 
     da, db = lines_days(fa), lines_days(fb)
+
+    # **补双写检测。** 另一个会话审他的午夜判据时发现一个假 PASS，本路 B 级同形：
+    # 两个 ant_spot 同时写新文件时 ——
+    #   旧文件确实停了 ✓   新文件确实在长 ✓   串档检查也过（两份记录的日期都是新一天）✓
+    # **三条全 PASS，而实际是双写。** 而且双写窗口恰好在 A 级（01:10Z）到
+    # B 级（09:05Z）之间，A 级的实例数检查覆盖不到。
+    # 本日踩过的那 8 个同秒双条（18:32:00Z–18:32:34Z，见 7.6）就是这种情形。
+    #
+    # 两级证据并存，各自能发现对方发现不了的：
+    #   运行时证据（进程数）—— 看不出「一个进程写了两份内容」
+    #   数据侧证据（pid）  —— 看不出「进程已死但文件被别的东西改」
+    # **本路的 pid 自 18:38:55Z 起就写进每条记录**，所以数据侧这级立即可用。
+    cnt_b = sh("pgrep -f 'ant_spot\\.py' | wc -l | tr -d ' '")
+    main_b = sh("ps aux | grep -c '[c]ollector\\.py'")
+    cur_pid = sh("cat %s/spot.pid 2>/dev/null" % REPO)
+    pids_b = _pids_in(fb)
+
     checks = [
+        ("ant_spot 实例数 == 1（运行时证据：防双写）", cnt_b == "1", "实测 %s" % cnt_b),
+        ("主采集器实例数 == 1（未被牵连）", main_b == "1", "实测 %s" % main_b),
+        ("新文件里 ant_spot.py 只有一个 pid（数据侧证据：防双写）",
+         len(pids_b) == 1, "ant_spot.py 的 pid: %s" % (sorted(pids_b) or "无（文件不存在或无 pid 字段）")),
+        ("新文件的 pid 就是当前在跑的那个（把数据侧与运行时对上）",
+         len(pids_b) == 1 and cur_pid.isdigit() and str(sorted(pids_b)[0]) == cur_pid,
+         "文件 pid=%s / 当前 pid=%s" % (sorted(pids_b) or "无", cur_pid or "无")),
         ("旧文件已停止增长", a1 is not None and a1 == a2,
          "%s → %s 字节" % (a1, a2)),
         ("新文件已出现", b2 is not None, os.path.basename(fb) + ("（在）" if b2 else "（**不存在**）")),
@@ -187,6 +240,9 @@ def stage_b():
         "**两个文件同时在长 ⇒ 双写**，和没换天一样严重；只看「新文件出现了吗」会把它读成正常。",
         "任一文件含对方那天的记录 ⇒ 串档；按 trading_day 字段剔除，并登记到数据说明。",
         "旧文件停了但新文件也不长 ⇒ 进程死了；查 spot_runner.log 是否在反复拉起。",
+        "**实例数 != 1 或新文件里有多个 pid ⇒ 双写** —— 前四条文件判据此时全部成立，"
+        "只有这两条看得出来；按 pid 杀掉多余的那个，并按 (ts, kind) 去重。",
+        "新文件只有一个 pid 但与当前 pid 不同 ⇒ 写它的那个进程已经换代（期间可能有空洞）。",
     ]
     return report("B（是否换到新一天的文件）", checks, modes)
 
