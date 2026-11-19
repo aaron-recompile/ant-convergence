@@ -176,6 +176,69 @@ def _union(paths):
     return out, stats
 
 
+ARCHIVE_INTERVAL = 20          # spot_archive.py 的轮询间隔
+ARCHIVE_GRACE    = 2 * ARCHIVE_INTERVAL   # 新写的行还没轮到归档，不算漏
+
+
+def archive_integrity(now=None):
+    """归档完整性。**断言的是不变量，不是缺陷。**
+
+    原先这里断言的是「归档确有仓内没有的行」—— 那等于**断言 autostash 的 bug 还在**。
+    一旦 `run_mini.sh` 被修好、或公开仓被回填，归档就不再有多余的行，
+    这条断言会 FAIL，而那时候数据恰恰是健康的。**把缺陷写成期望值，修好缺陷就会报错。**
+
+    真正该守的不变量，在 bug 修好前后都成立：
+      A. **归档不得漏**：仓内每一行（除最近 ARCHIVE_GRACE 秒内刚写的）都必须在归档里。
+         这是归档存在的意义，也是「出现分歧时以归档为准」的前提。
+
+    「归档有而仓内没有」的条数只作为**信息**上报（= autostash 已造成的损失），
+    不作为通过条件 —— 它是 0 还是 111，都不该让自测红或绿。
+    """
+    import calendar
+    import time as _t
+    now = now or _t.time()
+    out = {}
+    for name in ("spot_%s.jsonl" % DAY, "minbars_%s.jsonl" % DAY):
+        rp, ap = os.path.join(REPO, name), os.path.join(ARCHIVE, name)
+        if not (os.path.exists(rp) and os.path.exists(ap)):
+            out[name] = {"ok": False, "why": "文件缺失"}
+            continue
+        repo_lines, arch = [], set()
+        for ln in open(rp, errors="replace"):
+            ln = ln.strip()
+            if ln and not _is_conflict_marker(ln):
+                repo_lines.append(ln)
+        for ln in open(ap, errors="replace"):
+            ln = ln.strip()
+            if ln:
+                arch.add(ln)
+
+        def age(ln):
+            try:
+                d = json.loads(ln)
+            except Exception:
+                return 1e9
+            t = d.get("t_epoch")
+            if t is None and d.get("fetched_at"):
+                try:
+                    t = calendar.timegm(_t.strptime(d["fetched_at"], "%Y-%m-%dT%H:%M:%SZ"))
+                except Exception:
+                    return 1e9
+            return (now - t) if t else 1e9
+
+        missing = [ln for ln in repo_lines if ln not in arch]
+        stale_missing = [ln for ln in missing if age(ln) > ARCHIVE_GRACE]
+        out[name] = {
+            "ok": not stale_missing,
+            "repo": len(repo_lines), "archive": len(arch),
+            "missing_total": len(missing),
+            "missing_stale": len(stale_missing),                   # ← 必须是 0
+            "missing_recent": len(missing) - len(stale_missing),   # 还没轮到，正常
+            "archive_only": len(arch - set(repo_lines)),           # ← 仅信息
+        }
+    return out
+
+
 def load_spot(verbose=False):
     """快照序列。应用 R1 / R2 / R3。返回 (records, report)。"""
     recs, stats = _union(SPOT_SOURCES)
@@ -280,24 +343,36 @@ def load_bars(primary="yahoo_1m", verbose=False):
     for r in kept:
         grp[(r.get("src"), r["bar_ts"])].append(r)
 
-    out, n_unstable = [], defaultdict(int)
+    # 三态，不是两态。**这是本模块自己犯过的一次口径混淆：**
+    # 初版写的是 `unstable = (len(cands) != 1)`，于是「每次抓到的 close 都是 None」
+    # 的分钟（无成交，`vol_shares == 0`）候选数为 0，也被标成了 `unstable: True` ——
+    # **把「源之间有分歧」和「没有任何源给出值」塞进了同一个标志。**
+    # 实测命中 1 个：`bar_ts` 14:37Z（09:37 ET）的 yahoo_1m，`n_fetches=1`、`vol_shares=0.0`。
+    # 按 `unstable` 筛「有争议的分钟」会把这种无成交分钟混进来；
+    # 它该说的是「这一分钟没有值」，和争议完全是两件事。
+    out, n_unstable, n_novalue = [], defaultdict(int), defaultdict(int)
     for (src, bt), v in grp.items():
         cands = sorted({c for c in (x.get("close_usd") for x in v) if c is not None})
-        single = len(cands) == 1
-        if not single:
+        no_value = (len(cands) == 0)
+        unstable = (len(cands) >= 2)
+        if unstable:
             n_unstable[src] += 1
+        if no_value:
+            n_novalue[src] += 1
         out.append({
             "bar_ts": bt, "src": src,
-            "close_usd": cands[0] if single else None,
+            "close_usd": cands[0] if len(cands) == 1 else None,
             "close_candidates": cands,
-            "close_spread_usd": (round(cands[-1] - cands[0], 6) if len(cands) > 1 else 0.0),
-            "unstable": not single,
+            "close_spread_usd": (round(cands[-1] - cands[0], 6) if unstable else 0.0),
+            "unstable": unstable,     # 源之间给了 >=2 个不同值
+            "no_value": no_value,     # 一个值都没有（多为无成交分钟）
             "n_fetches": len(v),
             "vol_shares": next((x.get("vol_shares") for x in v
                                 if x.get("vol_shares") is not None), None),
         })
     out.sort(key=lambda b: (b["src"], b["bar_ts"]))
     rep["unstable_minutes_by_src"] = dict(n_unstable)
+    rep["no_value_minutes_by_src"] = dict(n_novalue)
     rep["minutes_by_src"] = {s: sum(1 for b in out if b["src"] == s)
                              for s in {b["src"] for b in out}}
     rep["R6_primary_src"] = primary
@@ -311,8 +386,13 @@ def minute_close_series(verbose=False):
     """R6 的落地：返回 {bar_ts: close_usd} 主序列（yahoo_1m），
     外加 nasdaq_chart 的互校结果。主序列里不含 unstable 的分钟。"""
     bars, rep = load_bars(verbose=verbose)
+    # 必须同时排掉 unstable 和 no_value。**改三态时差点引入的第二个 bug：**
+    # 原先只筛 `not b["unstable"]`，而三态化之后 no_value 的 bar 的 `unstable` 变成了
+    # False，于是它会带着 `close_usd = None` 进主序列 —— 下游拿到一个 None 价格。
+    # 所以这里直接以「有单值」为准，不靠标志的否定来推。
     prim = {b["bar_ts"]: b["close_usd"] for b in bars
-            if b["src"] == "yahoo_1m" and not b["unstable"]}
+            if b["src"] == "yahoo_1m" and b["close_usd"] is not None
+            and not b["unstable"] and not b["no_value"]}
     xchk = {b["bar_ts"]: b for b in bars if b["src"] == "nasdaq_chart"}
     # 互校的正确做法：nasdaq 多值时不能挑一个来比（挑哪个都是 R6 禁止的「偷偷选」）。
     # 改问「yahoo 的值是否落在 nasdaq 的候选区间内」：落在区间内记距离 0，
@@ -373,10 +453,20 @@ def selftest():
 
     print("== selftest ==")
     spot, sr = load_spot()
-    chk("R1 并集补回了仓内缺失的行",
-        sr["raw"] > 0 and any("新增" in s and not s.startswith("新增 0 ")
-                              for p, s in sr["files"].items() if "ant-spot-archive" in p),
-        "归档确有仓内没有的行")
+    # 原先这里断言「归档确有仓内没有的行」= 断言 autostash 的 bug 还在；
+    # bug 修好或仓内回填后它会 FAIL，而那时数据是健康的。改断言不变量。
+    ai = archive_integrity()
+    chk("归档不得漏：仓内超过 %ds 的行必须都在归档里（不变量）" % ARCHIVE_GRACE,
+        all(v.get("ok") for v in ai.values()),
+        "; ".join("%s 漏 %s 条(另有 %s 条刚写未轮到)"
+                  % (n.split("_")[0], v.get("missing_stale"), v.get("missing_recent"))
+                  for n, v in ai.items()))
+    chk("R1 并集源都读到了（不断言缺陷存在，只要求来源可读）",
+        sr["raw"] > 0 and all("缺失" not in v for v in sr["files"].values()),
+        "仓内 %s / 归档 %s / autostash 已造成的损失 %s 条（仅信息，不作通过条件）"
+        % (ai.get("spot_%s.jsonl" % DAY, {}).get("repo"),
+           ai.get("spot_%s.jsonl" % DAY, {}).get("archive"),
+           ai.get("spot_%s.jsonl" % DAY, {}).get("archive_only")))
     chk("R2 丢弃 previousInfo 伪收盘价 == %d（封闭集，钉死）" % EXPECT_R2_PREVCLOSE,
         sr["R2_dropped_prevclose_records"] == EXPECT_R2_PREVCLOSE,
         "丢 %d 条%s" % (sr["R2_dropped_prevclose_records"],
@@ -406,14 +496,36 @@ def selftest():
         br["R5_dropped_offgrid_bar"] > 0 and br.get("R5_dropped_srcs") == ["yahoo_1m"],
         "丢 %d 条，来源 %s" % (br["R5_dropped_offgrid_bar"], br.get("R5_dropped_srcs")))
     nu = br["unstable_minutes_by_src"]
-    chk("R6 nasdaq_chart 的不稳定被标出而非被选掉",
-        nu.get("nasdaq_chart", 0) >= 100,
-        "标出 %d 个自相矛盾分钟" % nu.get("nasdaq_chart", 0))
+    # 原先写的是 `nasdaq_chart 不稳定分钟 >= 100` —— 那是**锚在开放数据上**：
+    # 它要求上游保持不稳定。若上游哪天修好了（自相矛盾分钟变 0），这条会 FAIL，
+    # 而那是好事不是坏事。改断言不变量：不稳定的分钟必须被**标出**而不是被悄悄选掉。
+    bad_flag = [b for b in bars if b["unstable"]
+                and (b["close_usd"] is not None or len(b["close_candidates"]) < 2)]
+    chk("R6 不稳定分钟一律标出且不替分析方选（不变量；不要求上游保持不稳定）",
+        not bad_flag,
+        ("unstable 的 %d 个分钟全部 close_usd=None 且候选>=2（nasdaq %d / yahoo %d）"
+         % (sum(1 for b in bars if b["unstable"]),
+            nu.get("nasdaq_chart", 0), nu.get("yahoo_1m", 0)))
+        if not bad_flag else "有 %d 个 unstable 分钟却给了单值" % len(bad_flag))
+
+    # 三态必须互斥且穷尽：unstable / no_value / 单值，不许两个同时真
+    tri_bad = [b for b in bars
+               if (b["unstable"] and b["no_value"])
+               or (b["no_value"] and b["close_candidates"])
+               or (not b["unstable"] and not b["no_value"] and b["close_usd"] is None)]
+    chk("bar 的三态互斥穷尽：分歧 / 无值 / 单值（不变量）",
+        not tri_bad,
+        "no_value %s；分歧 %s；无一例两态同真"
+        % (br.get("no_value_minutes_by_src"), br.get("unstable_minutes_by_src"))
+        if not tri_bad else "有 %d 个 bar 三态自相矛盾" % len(tri_bad))
     chk("R6 yahoo_1m 明显更稳",
         nu.get("yahoo_1m", 999) < nu.get("nasdaq_chart", 0) / 10,
         "yahoo %d 个 vs nasdaq %d 个" % (nu.get("yahoo_1m", -1), nu.get("nasdaq_chart", -1)))
 
     prim, xchk, mr = minute_close_series()
+    chk("主序列里没有 None 价格（不变量）",
+        all(v is not None for v in prim.values()),
+        "%d 个分钟全部有值" % len(prim))
     chk("主序列非空，且与互校源的候选区间不冲突",
         len(prim) > 200 and (mr["xcheck_max_dist_to_band_usd"] or 9) < 0.35,
         "%d 分钟, %d 个落在 nasdaq 候选区间内, 最大越界 $%s"
@@ -451,7 +563,98 @@ def selftest():
     return ok
 
 
+def negative_test():
+    """反向测试：逐个改坏精确期望值，要求自测**必须 FAIL**。
+
+    为什么必须有这一步：断言存在不等于断言会咬。本项目 7.12.1 记的那个
+    漏检测一种冲突标记的 grep，计数也非零、看起来也像在工作。
+    只做正向自测，无法区分「断言通过」和「断言根本没在判」。
+    """
+    import io as _io
+    cases = []
+
+    def case(name, setter, restore):
+        buf = _io.StringIO()
+        old_out = sys.stdout
+        sys.stdout = buf
+        try:
+            setter()
+            passed = selftest()
+        except Exception as e:
+            passed = "EXC:" + type(e).__name__
+        finally:
+            sys.stdout = old_out
+            restore()
+        ok = (passed is False)
+        cases.append((name, ok, passed))
+        print("  [%s] %-44s 自测结果=%s（期望 False）"
+              % ("PASS" if ok else "FAIL", name, passed))
+
+    def setg(k, v):
+        globals()[k] = v
+
+    print("== negative test：改坏期望值，自测必须 FAIL ==")
+    _r2 = EXPECT_R2_PREVCLOSE
+    case("R2 36 → 35", lambda: setg("EXPECT_R2_PREVCLOSE", 35),
+         lambda: setg("EXPECT_R2_PREVCLOSE", _r2))
+    _r4 = EXPECT_R4_UNTZ
+    case("R4 98 → 97", lambda: setg("EXPECT_R4_UNTZ", 97),
+         lambda: setg("EXPECT_R4_UNTZ", _r4))
+    _k = list(EXPECT_R3_DUP_KEYS)
+    case("R3 去掉一个重复键", lambda: setg("EXPECT_R3_DUP_KEYS", _k[:-1]),
+         lambda: setg("EXPECT_R3_DUP_KEYS", _k))
+    case("R3 多加一个不存在的键",
+         lambda: setg("EXPECT_R3_DUP_KEYS", _k + [("2026-11-19T19:00:00Z", "quote")]),
+         lambda: setg("EXPECT_R3_DUP_KEYS", _k))
+    _m = EXPECT_MIXED_SPOT_YIELDS_BARS
+    case("混装档 4 → 3", lambda: setg("EXPECT_MIXED_SPOT_YIELDS_BARS", 3),
+         lambda: setg("EXPECT_MIXED_SPOT_YIELDS_BARS", _m))
+    # 这条用例**本身曾锚在开放数据上**，是本模块反向测试里犯的同一类错：
+    # 初版写的是「把 ARCHIVE_GRACE 改成 -1，逼出漏档判定」。它只在
+    # 「归档刚好还没追上、仓内有几条新行未归档」时才会 FAIL ——
+    # 归档每 20 秒追一次，跑到这条时往往已经追平，于是改坏了也不报错。
+    # **反向测试本身不能依赖「当时恰好有损坏」。** 改成确定性构造：
+    # 临时把 ARCHIVE 指向一份故意删掉一行的归档副本，漏档必然成立。
+    import shutil as _sh
+    import tempfile as _tf
+    _arch = ARCHIVE
+    _tmp = _tf.mkdtemp(prefix="negtest_archive_")
+    for _n in ("spot_%s.jsonl" % DAY, "minbars_%s.jsonl" % DAY,
+               "recovered_from_autostash_%s.jsonl" % DAY, "close_%s.json" % DAY):
+        _src = os.path.join(_arch, _n)
+        if os.path.exists(_src):
+            _sh.copy(_src, os.path.join(_tmp, _n))
+    # 从副本里删掉第一行（必然是早于宽限窗口的旧行）→ 必须判为漏档
+    _f = os.path.join(_tmp, "spot_%s.jsonl" % DAY)
+    _lines = _io.open(_f, encoding="utf-8", errors="replace").readlines()
+    _io.open(_f, "w", encoding="utf-8").writelines(_lines[1:])
+
+    def _use_tmp():
+        setg("ARCHIVE", _tmp)
+        setg("SPOT_SOURCES", [os.path.join(REPO, "spot_%s.jsonl" % DAY),
+                              os.path.join(_tmp, "spot_%s.jsonl" % DAY),
+                              os.path.join(_tmp, "recovered_from_autostash_%s.jsonl" % DAY)])
+
+    def _restore():
+        setg("ARCHIVE", _arch)
+        setg("SPOT_SOURCES", [os.path.join(REPO, "spot_%s.jsonl" % DAY),
+                              os.path.join(_arch, "spot_%s.jsonl" % DAY),
+                              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)])
+        _sh.rmtree(_tmp, ignore_errors=True)
+
+    case("归档副本删掉一行（确定性构造漏档）", _use_tmp, _restore)
+
+    print("== 恢复原期望值后正向自测 ==")
+    fwd = selftest()
+    all_ok = all(ok for _, ok, _ in cases) and fwd
+    print("== %s ==" % ("NEGATIVE ALL PASS（每条断言都会咬）"
+                        if all_ok else "有断言不会咬，或恢复后正向不过"))
+    return all_ok
+
+
 if __name__ == "__main__":
+    if "--negative" in sys.argv:
+        sys.exit(0 if negative_test() else 1)
     if "--selftest" in sys.argv:
         sys.exit(0 if selftest() else 1)
     load_spot(verbose=True)
