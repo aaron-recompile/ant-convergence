@@ -220,22 +220,90 @@ def spot_ant():
     except Exception:
         return None
 
+# ── 资金费归一化 ────────────────────────────────────────────────
+# 各场所口径不同，不折算就不能比较。已逐个实测（2026-11-18）：
+#   binance   fundingIntervalHours=8，lastFundingRate 是比率
+#   binance 走 CoinGecko 时 funding_rate 是【百分数】→ 与直连差 100 倍
+#   hyperliquid  每 1 小时
+#   kraken    fundingRate 是绝对值（价格单位），relativeFundingRate 才是比率/1h
+#   gate funding_interval=28800s / bitget ratePeriod=8 / kucoin granularity=28800000ms
+FUND_HRS={"binance_ANTUSDT":8,"hl_xyz_ANT":1,"hl_para_ANTH":1,
+          "kraken_PF_ANTXUSD":1,"gate_ANT_USDT":8,
+          "bitget_ANTUSDT":8,"kucoin_ANTUSDTM":8}
+
+def norm_funding(key,v):
+    """原始值原样保留；另写 funding_8h（每8小时比率）和 funding_apr（年化）。"""
+    if not isinstance(v,dict) or key not in FUND_HRS: return v
+    hrs=FUND_HRS[key]; raw=v.get("funding")
+    if key=="binance_ANTUSDT" and v.get("via")=="coingecko" and raw is not None:
+        raw=raw/100.0                      # CoinGecko 给百分数
+    if key=="kraken_PF_ANTXUSD":
+        raw=v.get("rel_funding")
+        if raw is None and v.get("funding") is not None and v.get("index"):
+            raw=v["funding"]/v["index"]
+    if raw is None: return v
+    f8=raw*(8.0/hrs)
+    v["funding_8h"]=f8; v["funding_apr"]=f8*3*365; v["funding_hrs"]=hrs
+    return v
+
+def _bn_sent():
+    """币安多空比 + 未平仓历史 = 情绪的真实读数。
+    上市前 mark≡index，premium≡0，资金费被钉在利率基准上不动，读不出情绪；
+    这组多空比才动。只有 fapi（直连或代理）有，CoinGecko 没有。"""
+    out={}
+    eps=[("ls_account","globalLongShortAccountRatio"),
+         ("ls_top_pos","topLongShortPositionRatio"),
+         ("ls_top_acct","topLongShortAccountRatio")]
+    def one(nm,ep):
+        d,_=_get(f"https://fapi.binance.com/futures/data/{ep}?symbol=ANTUSDT&period=5m&limit=1",timeout=10)
+        if isinstance(d,list) and d:
+            return nm,float(d[0]["longShortRatio"]),float(d[0]["longAccount"])
+        return nm,None,None
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs=[ex.submit(one,nm,ep) for nm,ep in eps]
+        ft=ex.submit(_get,"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=ANTUSDT&period=5m&limit=1",10)
+        fo=ex.submit(_get,"https://fapi.binance.com/futures/data/openInterestHist?symbol=ANTUSDT&period=5m&limit=1",10)
+        for f in futs:
+            try:
+                nm,r,lg=f.result(timeout=12)
+                if r is not None: out[nm]=r; out[nm+"_long"]=lg
+            except Exception: pass
+        try:
+            d,_=ft.result(timeout=12)
+            if isinstance(d,list) and d:
+                out["taker_bs"]=float(d[0]["buySellRatio"])
+                out["taker_buy"]=float(d[0]["buyVol"]); out["taker_sell"]=float(d[0]["sellVol"])
+        except Exception: pass
+        try:
+            d,_=fo.result(timeout=12)
+            if isinstance(d,list) and d:
+                out["oi_contracts"]=float(d[0]["sumOpenInterest"])
+                out["oi_usd"]=float(d[0]["sumOpenInterestValue"])
+        except Exception: pass
+    if not out: return None
+    out["via"]="fapi"
+    return out
+
+def bn_sent(): return _throttled("bn_sent",_bn_sent,every=60)
+
 def sample(only=None,with_para=True):
     """only: None=全部 | 'binance' 只采币安 | 'noBinance' 不采币安"""
     ts=datetime.datetime.now(datetime.timezone.utc)
     r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp())}
     if only=="binance":
-        r["binance_ANTUSDT"]=binance(); return r
+        r["binance_ANTUSDT"]=norm_funding("binance_ANTUSDT",binance())
+        r["binance_sent"]=bn_sent(); return r
     jobs=[("hl_xyz_ANT",lambda: hyperliquid("xyz","xyz:ANT")),
           ("kraken_PF_ANTXUSD",kraken),
           ("spot_ANT_nasdaq",spot_ant),
           ("gate_ANT_USDT",gate),("bitget_ANTUSDT",bitget),("kucoin_ANTUSDTM",kucoin)]
-    if only!="noBinance": jobs.insert(0,("binance_ANTUSDT",binance))
+    if only!="noBinance":
+        jobs.insert(0,("binance_ANTUSDT",binance)); jobs.append(("binance_sent",bn_sent))
     if with_para: jobs.append(("hl_para_ANTH",lambda: hyperliquid("para","para:ANTH")))
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         futs={k:ex.submit(fn) for k,fn in jobs}
         for k,f in futs.items():
-            try: r[k]=f.result(timeout=12)
+            try: r[k]=norm_funding(k,f.result(timeout=12))
             except Exception: r[k]=None
     return r
 

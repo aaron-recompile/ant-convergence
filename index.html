@@ -41,7 +41,11 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
   <span class="tag" id="m2"></span>
 </div>
 
+<div class="w" id="top"><h3>发行价 $83 · 永续合约隐含</h3><div id="prem"></div></div>
+
 <div class="grid" id="cards"></div>
+
+<div class="w"><h3>情绪 · 币安多空（5 分钟档）</h3><div id="sent">—</div></div>
 
 <div class="w"><h3>跨场所价差</h3><div id="sp"></div></div>
 
@@ -58,7 +62,7 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 <div class="note" id="chn"></div></div>
 
 <div class="ft">
-  Anthropic（ANT）上市前永续合约与 Nasdaq 现货。825M 股，区间 $70–78，2026-11-19 挂牌。<br>
+  Anthropic（ANT）上市前永续合约与 Nasdaq 现货。发行价 $83，2026-11-19 Nasdaq 挂牌。<br>资金费已按各场所结算周期折算到年化（币安/Bitget/KuCoin/Gate 每 8 小时，Hyperliquid 与 Kraken 每小时）。<br>
   <a href="https://github.com/aaron-recompile/ant-convergence">数据与源码</a>
 </div>
 
@@ -103,13 +107,14 @@ function render(){
   if(!S.length){ document.getElementById('m1').textContent='暂无数据'; return; }
   // 两台机器写不同文件，最后一个桶可能只含其中一路 —— 每个场所各取自己最新的非空值
   var last={}, age={};
-  for(var i=S.length-1;i>=0 && i>S.length-200;i--){
-    for(var j=0;j<V.length;j++){
-      var kk=V[j][0];
+  var KEYS=V.map(function(v){return v[0];}).concat(['binance_sent']);
+  for(var i=S.length-1;i>=0 && i>S.length-400;i--){
+    for(var j=0;j<KEYS.length;j++){
+      var kk=KEYS[j];
       if(last[kk]===undefined && S[i][kk]){ last[kk]=S[i][kk]; age[kk]=S[i].ts_epoch; }
     }
   }
-  var newest=Math.max.apply(null,Object.keys(age).map(function(k){return age[k];}).concat([0]));
+  var newest=Math.max.apply(null,V.map(function(v){return age[v[0]]||0;}).concat([0]));
   document.getElementById('m1').textContent=new Date(newest*1000).toISOString().slice(0,19).replace('T',' ')+' UTC';
   document.getElementById('m2').textContent=S.length.toLocaleString()+' 点';
   var h='', marks=[];
@@ -121,7 +126,9 @@ function render(){
       var vol=v.vol24h_usd; if(vol) s+='量 $'+(vol/1e6).toFixed(1)+'M<br>';
       var oi=v.oi_usd!=null?('$'+(v.oi_usd/1e6).toFixed(0)+'M'):(v.oi_contracts!=null?Math.round(v.oi_contracts).toLocaleString():null);
       if(oi) s+='未平仓 '+oi+'<br>';
-      if(v.funding!=null) s+='资金费 '+(v.funding*100).toFixed(4)+'%<br>';
+      if(v.funding_apr!=null) s+='资金费 '+(v.funding_apr>=0?'+':'')+(v.funding_apr*100).toFixed(2)+'%/年'+
+        ' <span style="opacity:.6">('+(v.funding_8h*100).toFixed(4)+'%/8h)</span><br>';
+      else if(v.funding!=null) s+='资金费 '+(v.funding*100).toFixed(4)+'% <span class="warn">口径未归一</span><br>';
       if(v.bid&&v.ask) s+='盘口 '+F(v.bid)+' / '+F(v.ask)+'<br>';
       var lag=newest-(age[k]||0);
       if(lag>60) s+='<span class="warn">'+Math.round(lag/60)+' 分钟前</span>';
@@ -131,6 +138,25 @@ function render(){
   }
   document.getElementById('cards').innerHTML=h;
 
+  var IPO=83;
+  if(marks.length){
+    var avg=marks.reduce(function(a,m){return a+m[1];},0)/marks.length;
+    document.getElementById('prem').innerHTML=
+      '<div class="big">$'+F(avg)+'</div><div class="note">七场所均价 · 对发行价 $'+IPO+' 为 '+
+      '<span class="'+(avg>=IPO?'up':'dn')+'">'+(avg>=IPO?'+':'')+F((avg/IPO-1)*100)+'%</span></div>';
+  }
+  var sv=last['binance_sent'];
+  if(sv){
+    var sh='';
+    function row(lab,r,lg){ if(r==null) return '';
+      return '<span style="display:inline-block;min-width:190px">'+lab+' <b class="'+(r>=1?'up':'dn')+'">'+F(r)+'</b>'+
+             (lg!=null?' <span style="opacity:.6">('+(lg*100).toFixed(1)+'% 多)</span>':'')+'</span>'; }
+    sh+=row('散户账户多空比',sv.ls_account,sv.ls_account_long);
+    sh+=row('大户持仓多空比',sv.ls_top_pos,sv.ls_top_pos_long);
+    sh+=row('大户账户多空比',sv.ls_top_acct,sv.ls_top_acct_long);
+    sh+=row('吃单买卖比',sv.taker_bs,null);
+    document.getElementById('sent').innerHTML='<div style="font-family:var(--mono);font-size:12px;line-height:2.1">'+sh+'</div>';
+  }
   if(marks.length>1){
     var ps=marks.map(function(m){return m[1];});
     var lo=Math.min.apply(null,ps), hi=Math.max.apply(null,ps), sp=(hi/lo-1)*100;
