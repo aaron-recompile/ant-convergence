@@ -210,26 +210,65 @@ def kraken():
                     "suspended":t.get("suspended"),"via":"direct"}
     return None
 
-def spot_ant():
-    """上市后才有。Nasdaq ANT 现货。"""
-    d,v=_get("https://query2.finance.yahoo.com/v8/finance/chart/ANT?range=1d&interval=1m")
+def _f(x):
     try:
-        m=d["chart"]["result"][0]["meta"]
-        return {"price":m.get("regularMarketPrice"),"prev_close":m.get("chartPreviousClose"),
-                "vol":m.get("regularMarketVolume"),"state":m.get("marketState"),"via":v}
-    except Exception:
-        return None
+        x=str(x).replace("$","").replace(",","").strip()
+        if x in ("","N/A","NA","--","unch"): return None
+        return float(x)
+    except Exception: return None
 
-# ── 资金费归一化 ────────────────────────────────────────────────
-# 各场所口径不同，不折算就不能比较。已逐个实测（2026-11-18）：
-#   binance   fundingIntervalHours=8，lastFundingRate 是比率
-#   binance 走 CoinGecko 时 funding_rate 是【百分数】→ 与直连差 100 倍
-#   hyperliquid  每 1 小时
-#   kraken    fundingRate 是绝对值（价格单位），relativeFundingRate 才是比率/1h
-#   gate funding_interval=28800s / bitget ratePeriod=8 / kucoin granularity=28800000ms
-FUND_HRS={"binance_ANTUSDT":8,"hl_xyz_ANT":1,"hl_para_ANTH":1,
-          "kraken_PF_ANTXUSD":1,"gate_ANT_USDT":8,
-          "bitget_ANTUSDT":8,"kucoin_ANTUSDTM":8}
+def _spot_nasdaq():
+    """Nasdaq 自己的报价接口，带盘口和成交量。首笔成交前 lastSalePrice 是 'N/A'。"""
+    d,via=_get("https://api.nasdaq.com/api/quote/ANT/info?assetclass=stocks",timeout=10)
+    dd=(d or {}).get("data") or {}
+    p=(dd.get("primaryData") or {})
+    if not dd.get("symbol"): return None
+    px=_f(p.get("lastSalePrice"))
+    return {"price":px,"bid":_f(p.get("bidPrice")),"ask":_f(p.get("askPrice")),
+            "bid_size":_f(p.get("bidSize")),"ask_size":_f(p.get("askSize")),
+            "vol":_f(p.get("volume")),"chg_pct":_f((p.get("percentageChange") or "").replace("%","")),
+            "last_trade_ts":p.get("lastTradeTimestamp") or None,
+            "state":dd.get("marketStatus"),"realtime":p.get("isRealTime"),
+            "src":"nasdaq","via":via,"traded":px is not None}
+
+def _spot_yahoo():
+    d,via=_get("https://query2.finance.yahoo.com/v8/finance/chart/ANT?range=1d&interval=1m",timeout=10)
+    r=((d or {}).get("chart") or {}).get("result") or []
+    if not r: return None
+    m=r[0].get("meta") or {}
+    px=m.get("regularMarketPrice")
+    return {"price":px,"prev_close":m.get("chartPreviousClose"),
+            "vol":m.get("regularMarketVolume"),"state":m.get("marketState"),
+            "day_high":m.get("regularMarketDayHigh"),"day_low":m.get("regularMarketDayLow"),
+            "src":"yahoo","via":via,"traded":px is not None}
+
+def _spot_cnbc():
+    """注意：首笔成交前 CNBC 回的 last 是发行价 $83（上一日收盘占位）。
+    只有当 last_timedate 是今天、且 open/high/low 不全为 0 时才认成交。"""
+    d,via=_get("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
+               "?symbols=ANT&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json",timeout=10)
+    q=(((d or {}).get("FormattedQuoteResult") or {}).get("FormattedQuote") or [])
+    if not q: return None
+    t=q[0]
+    o,h,l=_f(t.get("open")),_f(t.get("high")),_f(t.get("low"))
+    traded = bool(o or h or l)
+    return {"price":_f(t.get("last")) if traded else None,
+            "quoted":_f(t.get("last")),"open":o,"high":h,"low":l,
+            "prev_close":_f(t.get("previous_day_closing")),
+            "last_timedate":t.get("last_timedate"),
+            "src":"cnbc","via":via,"traded":traded}
+
+def spot_ant():
+    """Nasdaq ANT 现货。三个源依次试，第一个报出真实成交价的胜出；
+    都没成交时也返回一条（traded=False），好让记录里留下『当时确实还没开盘』这个事实。"""
+    first=None
+    for fn in (_spot_nasdaq,_spot_yahoo,_spot_cnbc):
+        try: r=fn()
+        except Exception: r=None
+        if not r: continue
+        if first is None: first=r
+        if r.get("traded") and r.get("price"): return r
+    return first
 
 def norm_funding(key,v):
     """原始值原样保留；另写 funding_8h（每8小时比率）和 funding_apr（年化）。"""
@@ -291,8 +330,16 @@ def sample(only=None,with_para=True):
     ts=datetime.datetime.now(datetime.timezone.utc)
     r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp())}
     if only=="binance":
-        r["binance_ANTUSDT"]=norm_funding("binance_ANTUSDT",binance())
-        r["binance_sent"]=bn_sent(); return r
+        # 现货两台都采：首笔成交是全项目最关键的一条，不能单点
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            fb=ex.submit(binance); fs=ex.submit(bn_sent); fp=ex.submit(spot_ant)
+            try: r["binance_ANTUSDT"]=norm_funding("binance_ANTUSDT",fb.result(timeout=12))
+            except Exception: r["binance_ANTUSDT"]=None
+            try: r["binance_sent"]=fs.result(timeout=12)
+            except Exception: r["binance_sent"]=None
+            try: r["spot_ANT_nasdaq"]=fp.result(timeout=12)
+            except Exception: r["spot_ANT_nasdaq"]=None
+        return r
     jobs=[("hl_xyz_ANT",lambda: hyperliquid("xyz","xyz:ANT")),
           ("kraken_PF_ANTXUSD",kraken),
           ("spot_ANT_nasdaq",spot_ant),
