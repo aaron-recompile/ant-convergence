@@ -336,6 +336,10 @@ def main():
             day=rec["ts_utc"][:10]
             with open(os.path.join(OUT,f"{prefix}_{day}.jsonl"),"a",encoding="utf-8") as f:
                 f.write(json.dumps(rec,ensure_ascii=False)+"\n")
+            # 最新一条单独落一个小文件：盯盘页只要读这个，不必拉整天的 jsonl
+            tmp=os.path.join(OUT,f".latest_{prefix}.tmp")
+            with open(tmp,"w",encoding="utf-8") as f: json.dump(rec,f,ensure_ascii=False)
+            os.replace(tmp,os.path.join(OUT,f"latest_{prefix}.json"))
             n+=1
             if n%max(1,int(60/iv))==1 or once: print(f"  [{n:>6}] {line(rec)}",flush=True)
         except Exception as e:
