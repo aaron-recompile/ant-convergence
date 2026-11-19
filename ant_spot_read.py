@@ -43,7 +43,25 @@ from collections import defaultdict
 
 REPO    = os.path.expanduser("~/ant-convergence/data")
 ARCHIVE = os.path.expanduser("~/ant-spot-archive")
-DAY     = "2026-11-19"
+# ── 交易日与「期望值锚定日」是两件事，必须分开 ────────────────────────
+# DAY 决定读哪些文件；PINNED_DAY 是下面那一整套 EXPECT_* 的来源日
+# （R2=36、R4=98、R3 那 8 个键、混装 7+23 —— 全都是 2026-11-19 当天的**实测**瑕疵数）。
+#
+# 原来两者是同一个常量，于是有一个安静的坑：
+# **下一个交易日有人把 DAY 一改，就会拿 11-19 的瑕疵基准去校验另一天的数据** ——
+# 得到一片 FAIL，而且不知为何；或者更糟，把「那天本来就没有这些瑕疵」误读成「数据坏了」。
+#
+# 所以分开，并且**在非锚定日直接拒绝执行**，不自动跟随。
+# 不自动跟随是刻意的：读数层的期望值是**某一天的**，自动跟随会让它
+# 悄悄去校验一份它根本没有基准的数据 —— 那种「通过」毫无意义。
+# （同理于采集侧那条「自检不自动改任何常量」：宁可停下来喊，不要悄悄往下走。
+#   两者的理由不同但结论相同 —— 那边是「哪天的数据按哪套常量采的」要可追溯，
+#   这边是「没有基准的校验不该看起来通过」。）
+#
+# 用 --day YYYY-MM-DD 可以改读哪一天；换天后 selftest / negative / simulate-backfill
+# 一律拒绝执行并说明原因，只有 load_* 这些纯读取接口仍可用。
+PINNED_DAY = "2026-11-19"          # EXPECT_* 的实测来源日，**不要随 DAY 一起改**
+DAY     = PINNED_DAY
 ISSUE_PRICE = 83.0
 
 # 抢救档是**混装**的：当初把被 autostash 销毁的 7 条 spot 和 4 条 minbars
@@ -466,9 +484,26 @@ def _dump(rep, tag):
             print("  %-32s %s" % (k, v))
 
 
+def _require_pinned_day(what):
+    """期望值只对 PINNED_DAY 成立。换了天就拒绝执行，并说清为什么。"""
+    if DAY == PINNED_DAY:
+        print("[锚定] 交易日 = %s（期望值锚定日 %s）" % (DAY, PINNED_DAY))
+        return True
+    print("✗ 拒绝执行 %s：EXPECT_* 是 %s 的实测瑕疵数"
+          "（R2=%d、R4=%d、R3 %d 个键、混装 %d+%d），对 %s 没有基准。"
+          % (what, PINNED_DAY, EXPECT_R2_PREVCLOSE, EXPECT_R4_UNTZ,
+             len(EXPECT_R3_DUP_KEYS), EXPECT_MIXED_SPOT_YIELDS_BARS,
+             EXPECT_MIXED_BARS_YIELDS_SPOT, DAY))
+    print("  要校验 %s，需先在那一天的数据上重新实测这些瑕疵数，再更新 PINNED_DAY。" % DAY)
+    print("  （load_spot / load_bars / official_close 这些纯读取接口不受此限制。）")
+    return False
+
+
 def selftest():
     """自测：六条规则必须各自在真实数据上**生效且可见**。
     任何一条「没命中」都说明数据或代码变了，必须停下来看，不能当通过。"""
+    if not _require_pinned_day("selftest"):
+        return False
     ok = True
 
     def chk(name, cond, detail):
@@ -600,6 +635,8 @@ def simulate_backfill(verbose=True):
     `archive_only` 归零的状态），把 REPO 指过去，跑全套 `selftest()`，要求 rc=0。
     只读真实文件、只写临时目录，不碰 `data/`、不碰 git、不碰采集进程。
     """
+    if not _require_pinned_day("simulate-backfill"):
+        return False
     import shutil as _sh
     import tempfile as _tf
 
@@ -698,6 +735,8 @@ def negative_test():
     漏检测一种冲突标记的 grep，计数也非零、看起来也像在工作。
     只做正向自测，无法区分「断言通过」和「断言根本没在判」。
     """
+    if not _require_pinned_day("negative test"):
+        return False
     import io as _io
     cases = []
 
@@ -784,6 +823,20 @@ def negative_test():
 
 
 if __name__ == "__main__":
+    if "--day" in sys.argv:
+        _d = sys.argv[sys.argv.index("--day") + 1]
+        DAY = _d
+        SPOT_SOURCES = [os.path.join(REPO, "spot_%s.jsonl" % DAY),
+                        os.path.join(ARCHIVE, "spot_%s.jsonl" % DAY),
+                        os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY),
+                        os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)]
+        BAR_SOURCES = [os.path.join(REPO, "minbars_%s.jsonl" % DAY),
+                       os.path.join(ARCHIVE, "minbars_%s.jsonl" % DAY),
+                       os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY),
+                       os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)]
+        CLOSE_SOURCES = [os.path.join(REPO, "close_%s.json" % DAY),
+                         os.path.join(ARCHIVE, "close_%s.json" % DAY)]
+
     if "--simulate-backfill" in sys.argv:
         sys.exit(0 if simulate_backfill() else 1)
     if "--negative" in sys.argv:
