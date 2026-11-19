@@ -102,6 +102,40 @@ def _is_conflict_marker(ln):
     return ln.startswith("<<<<<<<") or ln.startswith(">>>>>>>")
 
 
+# ── 已登记瑕疵的**精确期望值**（不是阈值）────────────────────────────
+# 为什么要精确：原先自测写的是 `>= 33` / `>= 90` 这类阈值，意思是
+# **已登记的瑕疵数变了，自测照样通过** —— R4 从 98 变成 150 也发现不了。
+# 阈值只能证明「规则跑了」，精确值才能证明「数据还是我核过的那份」。
+# 所以凡是**已经封闭**（产生它的原因已经消失、数量不会再变）的瑕疵，一律钉成等号；
+# 哪天它变了，自测立刻 FAIL，而不是默默通过。
+#
+# 哪些封闭、为什么：
+#   R2  36 条：收盘轮询于 21:14:29Z 停止（进程重启后因 close_*.json 已存在而跳过），不再产生。
+#   R4  98 条：nasdaq_chart 时区修正后不再产生错时间戳。
+#   R3   8 个键：两进程并写窗口 18:32:00Z–18:32:34Z 已结束，两个进程都已不在。
+#        （注意：`数据说明.md` 早先写的「7 个时刻」少算了一个 —— 第 8 个是
+#         18:32:20Z 的 `multi`，当初只数了 `quote`。此处以实测的 8 为准。）
+#   混装  7 条 spot + 4 条 bar：抢救档 11 行是定稿的历史文件，不会再变。
+#
+# 哪些**不**封闭、为什么不钉：
+#   R5  非整分钟的半成品 bar：采集还在跑，每抓一次就可能多一个，数量必然增长。
+#       改为钉**不变量**：被 R5 丢掉的必须全是 `yahoo_1m`（nasdaq_chart 永远落在整分钟）。
+EXPECT_R2_PREVCLOSE = 36
+EXPECT_R4_UNTZ      = 98
+EXPECT_MIXED_SPOT_YIELDS_BARS = 4
+EXPECT_MIXED_BARS_YIELDS_SPOT = 7
+EXPECT_R3_DUP_KEYS = [
+    ("2026-11-19T18:32:00Z", "quote"),
+    ("2026-11-19T18:32:05Z", "quote"),
+    ("2026-11-19T18:32:09Z", "quote"),
+    ("2026-11-19T18:32:14Z", "quote"),
+    ("2026-11-19T18:32:19Z", "quote"),
+    ("2026-11-19T18:32:20Z", "multi"),
+    ("2026-11-19T18:32:29Z", "quote"),
+    ("2026-11-19T18:32:34Z", "quote"),
+]
+
+
 def _union(paths):
     """R1：并集 + 整行精确去重。返回 (records, stats)。
 
@@ -180,13 +214,15 @@ def load_spot(verbose=False):
             "字段名可能变了，停下来看，不要让它继续跑。样例: %s"
             % (len(missing_ts), json.dumps(missing_ts[0], ensure_ascii=False)[:200]))
 
-    by_key, dropped = {}, 0
+    by_key, dropped, dup_keys = {}, 0, []
     for r in recs:
         k = (r["ts"], r.get("kind"))
         if k in by_key:
             dropped += 1
+            dup_keys.append(k)
             continue
         by_key[k] = r
+    rep["R3_dup_keys"] = sorted(set(dup_keys))
     recs = list(by_key.values())
     rep["R3_dropped_dup_ts_kind"] = dropped
 
@@ -223,6 +259,7 @@ def load_bars(primary="yahoo_1m", verbose=False):
         raise RuntimeError("所有 bar 都缺 bar_ts 或 fetched_at，字段名可能变了。停下来看。")
 
     kept, d4, d5 = [], 0, 0
+    d5_srcs = set()
     for r in recs:
         if r.get("src") == "nasdaq_chart" and not r.get("tz_fix_applied"):
             d4 += 1                                     # R4
@@ -230,10 +267,12 @@ def load_bars(primary="yahoo_1m", verbose=False):
         bt = r.get("bar_ts")
         if bt is None or bt % 60:
             d5 += 1                                     # R5
+            d5_srcs.add(r.get("src"))
             continue
         kept.append(r)
     rep["R4_dropped_untz_fixed"] = d4
     rep["R5_dropped_offgrid_bar"] = d5
+    rep["R5_dropped_srcs"] = sorted(x for x in d5_srcs if x)
 
     grp = defaultdict(list)
     for r in kept:
@@ -336,20 +375,34 @@ def selftest():
         sr["raw"] > 0 and any("新增" in s and not s.startswith("新增 0 ")
                               for p, s in sr["files"].items() if "ant-spot-archive" in p),
         "归档确有仓内没有的行")
-    chk("R2 丢弃 previousInfo 伪收盘价", sr["R2_dropped_prevclose_records"] >= 33,
-        "丢 %d 条（已登记 36 条）" % sr["R2_dropped_prevclose_records"])
-    chk("R3 并写窗口的重复已去掉", sr["R3_dropped_dup_ts_kind"] >= 7,
-        "去 %d 条（已登记 7 个同秒双条）" % sr["R3_dropped_dup_ts_kind"])
+    chk("R2 丢弃 previousInfo 伪收盘价 == %d（封闭集，钉死）" % EXPECT_R2_PREVCLOSE,
+        sr["R2_dropped_prevclose_records"] == EXPECT_R2_PREVCLOSE,
+        "丢 %d 条%s" % (sr["R2_dropped_prevclose_records"],
+                       "" if sr["R2_dropped_prevclose_records"] == EXPECT_R2_PREVCLOSE
+                       else " ← 与登记的 %d 不符，数据变了，停下来看" % EXPECT_R2_PREVCLOSE))
+    got3 = sr.get("R3_dup_keys", [])
+    chk("R3 重复键恰好是并写窗口那 %d 个（封闭集，钉死）" % len(EXPECT_R3_DUP_KEYS),
+        got3 == sorted(EXPECT_R3_DUP_KEYS),
+        "%d 个%s" % (len(got3),
+                    "" if got3 == sorted(EXPECT_R3_DUP_KEYS)
+                    else " ← 多出 %s；并写窗口已结束，再出现说明又有两个进程在写"
+                         % [k for k in got3 if tuple(k) not in set(EXPECT_R3_DUP_KEYS)][:3]))
     chk("R2 后不残留 83.0 冒充收盘价",
         not [r for r in spot if r.get("kind") == "official_close"
              and r.get("official_close_usd") == ISSUE_PRICE],
         "无残留")
 
     bars, br = load_bars()
-    chk("R4 丢弃未修时区的 nasdaq bar", br["R4_dropped_untz_fixed"] >= 90,
-        "丢 %d 条（已登记 98 条）" % br["R4_dropped_untz_fixed"])
-    chk("R5 丢弃非整分钟的半成品 bar", br["R5_dropped_offgrid_bar"] >= 90,
-        "丢 %d 条（实测 94 个 yahoo 半成品）" % br["R5_dropped_offgrid_bar"])
+    chk("R4 丢弃未修时区的 nasdaq bar == %d（封闭集，钉死）" % EXPECT_R4_UNTZ,
+        br["R4_dropped_untz_fixed"] == EXPECT_R4_UNTZ,
+        "丢 %d 条%s" % (br["R4_dropped_untz_fixed"],
+                       "" if br["R4_dropped_untz_fixed"] == EXPECT_R4_UNTZ
+                       else " ← 与登记的 %d 不符" % EXPECT_R4_UNTZ))
+    # R5 不封闭（采集还在跑，半成品会继续增多），所以钉不变量而不是计数：
+    # 被丢掉的必须全是 yahoo_1m —— nasdaq_chart 的 bar 永远落在整分钟上。
+    chk("R5 丢掉的半成品 bar 全部来自 yahoo_1m（不变量；计数不封闭故不钉）",
+        br["R5_dropped_offgrid_bar"] > 0 and br.get("R5_dropped_srcs") == ["yahoo_1m"],
+        "丢 %d 条，来源 %s" % (br["R5_dropped_offgrid_bar"], br.get("R5_dropped_srcs")))
     nu = br["unstable_minutes_by_src"]
     chk("R6 nasdaq_chart 的不稳定被标出而非被选掉",
         nu.get("nasdaq_chart", 0) >= 100,
@@ -378,12 +431,14 @@ def selftest():
         "spot 缺 ts %d 条 / bars 缺 bar_ts %d 条"
         % (sr.get("R3_records_missing_ts", 0), br.get("bars_missing_bar_ts", 0)))
 
-    chk("混装的抢救档按形状分流，两种记录都被认领",
-        sr.get("dropped_not_spot_shaped", 0) >= 4 and br.get("dropped_not_bar_shaped", 0) >= 7
+    chk("混装抢救档分流恰好 %d bar / %d 快照（封闭集，钉死）"
+        % (EXPECT_MIXED_SPOT_YIELDS_BARS, EXPECT_MIXED_BARS_YIELDS_SPOT),
+        sr.get("dropped_not_spot_shaped") == EXPECT_MIXED_SPOT_YIELDS_BARS
+        and br.get("dropped_not_bar_shaped") == EXPECT_MIXED_BARS_YIELDS_SPOT
         and sr.get("unclassifiable", 1) == 0,
-        "spot 侧让出 %d 条 bar / bars 侧让出 %d 条快照 / 无法归类 %d"
-        % (sr.get("dropped_not_spot_shaped", 0), br.get("dropped_not_bar_shaped", 0),
-           sr.get("unclassifiable", -1)))
+        "spot 侧让出 %s 条 bar / bars 侧让出 %s 条快照 / 无法归类 %s"
+        % (sr.get("dropped_not_spot_shaped"), br.get("dropped_not_bar_shaped"),
+           sr.get("unclassifiable")))
 
     oc = official_close()
     chk("官方收盘价可读且不是发行价",
