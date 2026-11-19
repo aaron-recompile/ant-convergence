@@ -144,7 +144,15 @@ def stage_a():
         ("spot.log 里出现过常驻自检（新代码的指纹）", audit_hits > 0,
          "命中 %d 次" % audit_hits),
         ("推导出的 TRADING_DAY == %s" % DAY_A, derived == DAY_A, "实测 %s" % (derived or "取不到")),
-        ("arm_newcode.log 里没有 !!", arm_bang == 0, "!! 出现 %d 次" % arm_bang),
+        # **这一条是「某个告警没出现」型判据，单独看是二义的。**
+        # 若 arm_newcode 根本没跑，日志里自然没有 `!!`，它会**空洞地 PASS** ——
+        # 和另一个会话那个 `grep -c` 得 0 完全同形（见 7.28）。
+        # 它只在「任务确实跑过」成立时才有意义，所以把那个前提写进判据本身，
+        # 并在未跑过时明确报「无意义」而不是「通过」。
+        ("arm_newcode 跑过且没报 !!（前提不成立时不算通过）",
+         arm_done and arm_bang == 0,
+         ("!! 出现 %d 次" % arm_bang) if arm_done
+         else "**任务还没跑完，这条判据此刻无意义**（没有 !! 不等于没问题）"),
     ]
     modes = [
         "日志里没有「已 kill」⇒ 预约任务没跑到那一步；查它是否还在等（它每 60 秒醒一次）。",
