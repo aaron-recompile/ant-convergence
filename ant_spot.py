@@ -26,10 +26,67 @@ UA   = "ant-research"
 # ── 交易时段边界（2026-11-19，EST = UTC-5）────────────────────────
 # 下面两个常量已与 Yahoo 自报的 currentTradingPeriod.regular 对上：
 # start 1795098600 / end 1795122000，两边完全一致，故采用。
-TRADING_DAY   = "2026-11-19"
-REGULAR_OPEN  = 1795098600          # 2026-11-19T14:30:00Z = 09:30 ET
-REGULAR_CLOSE = 1795122000          # 2026-11-19T21:00:00Z = 16:00 ET
-POST_CLOSE    = 1795136400          # 2026-11-20T01:00:00Z = 20:00 ET
+def _us_eastern_is_dst(y, m, d):
+    """美东夏令时：3 月第二个周日起，11 月第一个周日止（均 2:00 本地）。
+    只按日期判，边界那两天的小时级精度对本用途足够（采集跨不过那两天的 2:00）。"""
+    if m < 3 or m > 11:
+        return False
+    if 3 < m < 11:
+        return True
+    # 该月 1 日是周几（0=周一 … 6=周日）
+    wd_first = calendar.weekday(y, m, 1)
+    first_sunday = 1 + ((6 - wd_first) % 7)
+    if m == 3:
+        return d >= first_sunday + 7      # 第二个周日
+    return d < first_sunday               # 11 月：第一个周日当天起即为 EST
+
+
+# ── 交易日：由当前时刻推导，不再硬编码 ──────────────────────────────
+# 为什么改：原来写死 TRADING_DAY = "2026-11-19"，而**所有输出文件名都由它拼出来**。
+# 进程跨过本场结束（20:00 ET）仍在跑时，会把下一个交易日的数据继续追加到本场的文件里 ——
+# 数据不丢，但归属错了，而且因为文件一直在长、看起来完全正常（见数据说明 7.21）。
+# 与其留一个「需要有人记得去重启」的雷，不如让它自己推导：下次拉起即正确。
+#
+# 切换点取 **04:00 ET（盘前开始）**：
+#   D 04:00 ET → D 20:00 ET   是 D 这一场（盘前 + 正常 + 盘后）
+#   D 20:00 ET → D+1 04:00 ET 无场次，归给 D（本场的尾巴，无害）
+# 所以「ET 日期，且 ET 时刻 < 04:00 时算前一天」就是要的规则。
+#
+# 可用环境变量 ANT_TRADING_DAY 覆盖 —— 重跑历史数据时必须能钉住某一天，
+# 否则同一份代码在不同时刻跑会写到不同文件。
+
+
+def _et_offset_for(y, mo, d):
+    """该日的 ET→UTC 偏移秒数（EST 18000 / EDT 14400）。"""
+    return 14400 if _us_eastern_is_dst(y, mo, d) else 18000
+
+
+def derive_trading_day(now=None):
+    now = now if now is not None else time.time()
+    # 先按 EST 粗判当天，再用该天真实的偏移复算一次（跨 DST 切换日也对）
+    for off in (18000,):
+        et = time.gmtime(now - off)
+        off2 = _et_offset_for(et.tm_year, et.tm_mon, et.tm_mday)
+        et = time.gmtime(now - off2)
+    if et.tm_hour < 4:                      # 04:00 ET 之前算前一个交易日
+        et = time.gmtime(now - off2 - 86400)
+    return time.strftime("%Y-%m-%d", et)
+
+
+TRADING_DAY = os.environ.get("ANT_TRADING_DAY") or derive_trading_day()
+# 场次边界：由 TRADING_DAY 推出，不再写死。
+# 为什么必须一起改：TRADING_DAY 已改为自动推导（见上），若这三个还写死在 2026-11-19，
+# 下一个交易日拉起时文件名会前进、场次判定却留在旧日期 —— **自动前进一半比不前进更糟**，
+# 因为 session_of() 会把全天判成 "closed"、收盘 ±600s 的密集窗口也落在错误的时刻。
+# 这正是本项目反复撞的「定义比实现宽」的形状（数据说明 7.15.1）：
+# 改了一处，却没有把依赖它的那几处一起改。
+_Y, _MO, _D = [int(x) for x in TRADING_DAY.split("-")]
+_DAY_BASE = calendar.timegm((_Y, _MO, _D, 0, 0, 0, 0, 0, 0))
+_ET_OFF = _et_offset_for(_Y, _MO, _D)       # EST 18000 / EDT 14400
+
+REGULAR_OPEN  = _DAY_BASE + 9 * 3600 + 30 * 60 + _ET_OFF   # 09:30 ET
+REGULAR_CLOSE = _DAY_BASE + 16 * 3600 + _ET_OFF            # 16:00 ET
+POST_CLOSE    = _DAY_BASE + 20 * 3600 + _ET_OFF            # 20:00 ET
 
 ISSUE_PRICE = 83.0                  # 发行价。首笔成交前多个源把它当行情占位回传。
 
@@ -335,7 +392,9 @@ def load_seen_bars(path):
 # 实测：x=1795088880000 解成 11:48:00Z，而它自带的标签写的是 "11:48 AM ET"（真 UTC 应为 16:48Z）。
 # 用 +18000s 对齐后与 Yahoo 同一分钟的收盘价 96/96 条差 < $0.60；不加偏移则零条重合。
 # 故偏移确为 EST 的 5 小时。注意这是 EST 定值，跨到夏令时（EDT）须改为 14400。
-ET_TO_UTC_OFFSET = 18000
+# 由交易日推出，不写死 —— 跨夏令时必须是 14400。原来写死 18000，
+# 常驻自检会喊（见 7.21），但能推导就不该靠喊。
+ET_TO_UTC_OFFSET = _ET_OFF
 
 
 def bars_nasdaq(d):
@@ -564,19 +623,6 @@ def emit(rec):
 # 不自动改任何常量：静默自我修正会让「哪天的数据按哪套常量采的」无法追溯。
 # 只在日志里喊，由人决定。
 
-def _us_eastern_is_dst(y, m, d):
-    """美东夏令时：3 月第二个周日起，11 月第一个周日止（均 2:00 本地）。
-    只按日期判，边界那两天的小时级精度对本用途足够（采集跨不过那两天的 2:00）。"""
-    if m < 3 or m > 11:
-        return False
-    if 3 < m < 11:
-        return True
-    # 该月 1 日是周几（0=周一 … 6=周日）
-    wd_first = calendar.weekday(y, m, 1)
-    first_sunday = 1 + ((6 - wd_first) % 7)
-    if m == 3:
-        return d >= first_sunday + 7      # 第二个周日
-    return d < first_sunday               # 11 月：第一个周日当天起即为 EST
 
 
 def audit_constants(now=None):
@@ -584,11 +630,23 @@ def audit_constants(now=None):
     now = now if now is not None else now_s()
     probs = []
 
-    today = time.strftime("%Y-%m-%d", time.gmtime(now))
-    if today != TRADING_DAY:
-        probs.append("TRADING_DAY=%s 但当前 UTC 日期是 %s —— "
-                     "输出文件名由 TRADING_DAY 拼出，新一天的数据正在写进旧一天的文件。"
-                     "必须停掉本进程、让守护用新的 TRADING_DAY 拉起。" % (TRADING_DAY, today))
+    # 判据不是「UTC 日期变了」。**初版就是那么写的，它会在午夜误报整整一小时。**
+    # 美东交易日 TRADING_DAY 的完整区间是
+    #     TRADING_DAY 14:30Z（09:30 ET 开市）→ 次日 01:00Z（20:00 ET 盘后结束）
+    # 所以 00:00–01:00Z 的数据 UTC 日期已经是次日，但它**仍属于 TRADING_DAY 这一场的盘后**，
+    # 写进 spot_<TRADING_DAY>.jsonl 是正确的。
+    # 拿 UTC 日期当交易日的代理，这两者在盘后那一小时分叉 —— 又是「判据的适用范围
+    # 比使用范围窄」（见数据说明 7.18.3）。**而假警报比没有警报更坏：它训练人忽略日志。**
+    #
+    # 真正的失效条件是**本场已经结束而进程还在跑**：now >= POST_CLOSE。
+    # 那之后采到的东西属于下一个交易日，却会继续追加到本场的文件里。
+    if now >= POST_CLOSE:
+        probs.append("本场（TRADING_DAY=%s）已于 %s 结束，但进程仍在运行 —— "
+                     "此后采到的数据属于下一个交易日，却会继续追加到本场的文件里"
+                     "（输出文件名由 TRADING_DAY 拼出）。数据不会丢，但归属错了，"
+                     "且因为文件一直在长、看起来完全正常。"
+                     "须停掉本进程，由守护用新的 TRADING_DAY 拉起。"
+                     % (TRADING_DAY, iso(POST_CLOSE)))
 
     y, m, d = [int(x) for x in TRADING_DAY.split("-")]
     want_off = 14400 if _us_eastern_is_dst(y, m, d) else 18000
