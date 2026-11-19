@@ -55,15 +55,25 @@ ISSUE_PRICE = 83.0
 # 同时这 4 条 bar 从未进入 minbars 序列（BAR_SOURCES 里没有抢救档）。
 # **按文件猜内容就是这么出错的；按形状分流才对。**
 RECOVERED = os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY)
+# 第二批抢救（2026-11-19 22:xx 从 git stash 捞出的 19 条）。也是混装的：16 条 spot + 3 条 bar。
+#
+# **它的存在本身是一条更正。** 7.10 写的「本路一条没丢，归档全部兜住」是错的 ——
+# 那个结论是拿「归档 vs 仓内」比出来的，而这个比法**结构上看不见**
+# 「在一个归档周期（20 秒）内就被 autostash 销毁」的行：归档从来没读到过它们，
+# 所以它们既不在仓内、也不在归档，两边一比反而显示「没有分歧」。
+# 唯一的地面真相是 `git stash`。详见 7.16。
+RECOVERED2 = os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)
 SPOT_SOURCES = [
     os.path.join(REPO,    "spot_%s.jsonl" % DAY),
     os.path.join(ARCHIVE, "spot_%s.jsonl" % DAY),
     RECOVERED,
+    RECOVERED2,
 ]
 BAR_SOURCES = [
     os.path.join(REPO,    "minbars_%s.jsonl" % DAY),
     os.path.join(ARCHIVE, "minbars_%s.jsonl" % DAY),
     RECOVERED,
+    RECOVERED2,
 ]
 
 
@@ -124,8 +134,12 @@ def _is_conflict_marker(ln):
 #       改为钉**不变量**：被 R5 丢掉的必须全是 `yahoo_1m`（nasdaq_chart 永远落在整分钟）。
 EXPECT_R2_PREVCLOSE = 36
 EXPECT_R4_UNTZ      = 98
-EXPECT_MIXED_SPOT_YIELDS_BARS = 4
-EXPECT_MIXED_BARS_YIELDS_SPOT = 7
+# 两份抢救档合计：第一批 7 spot + 4 bar，第二批 16 spot + 3 bar
+# → spot 侧要让出 4+3=7 条 bar，bars 侧要让出 7+16=23 条快照。
+# **这两个数因为新增第二份抢救档而变了** —— 钉死的期望值在数据来源变化时**本该**变，
+# 这正是钉等号的用处：它逼我在加来源时回来对账，而不是让它悄悄滑过去。
+EXPECT_MIXED_SPOT_YIELDS_BARS = 7
+EXPECT_MIXED_BARS_YIELDS_SPOT = 23
 EXPECT_R3_DUP_KEYS = [
     ("2026-11-19T18:32:00Z", "quote"),
     ("2026-11-19T18:32:05Z", "quote"),
@@ -215,7 +229,7 @@ def archive_integrity(now=None):
         # 对这 11 行不成立，回填后这条不变量会红。
         # 7.8 本来就写明「完整序列 = 归档文件 + 抢救文件」，是我在实现时只比了前者。
         # **所以这条断言今天也是错的，只是还没被触发** —— 它等着回填那天才炸。
-        for sp in (ap, RECOVERED):
+        for sp in (ap, RECOVERED, RECOVERED2):
             if not os.path.exists(sp):
                 continue
             for ln in open(sp, errors="replace"):
@@ -598,11 +612,13 @@ def simulate_backfill(verbose=True):
             ("spot_%s.jsonl" % DAY,
              [os.path.join(_repo, "spot_%s.jsonl" % DAY),
               os.path.join(_arch, "spot_%s.jsonl" % DAY),
-              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)]),
+              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY),
+              os.path.join(_arch, "recovered_from_stash_pass2_%s.jsonl" % DAY)]),
             ("minbars_%s.jsonl" % DAY,
              [os.path.join(_repo, "minbars_%s.jsonl" % DAY),
               os.path.join(_arch, "minbars_%s.jsonl" % DAY),
-              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)]),
+              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY),
+              os.path.join(_arch, "recovered_from_stash_pass2_%s.jsonl" % DAY)]),
         ):
             seen, out = set(), []
             n_repo = 0
@@ -643,11 +659,15 @@ def simulate_backfill(verbose=True):
         globals()["SPOT_SOURCES"] = [os.path.join(tmp, "spot_%s.jsonl" % DAY),
                                      os.path.join(_arch, "spot_%s.jsonl" % DAY),
                                      os.path.join(_arch,
-                                                  "recovered_from_autostash_%s.jsonl" % DAY)]
+                                                  "recovered_from_autostash_%s.jsonl" % DAY),
+                                     os.path.join(_arch,
+                                                  "recovered_from_stash_pass2_%s.jsonl" % DAY)]
         globals()["BAR_SOURCES"] = [os.path.join(tmp, "minbars_%s.jsonl" % DAY),
                                     os.path.join(_arch, "minbars_%s.jsonl" % DAY),
                                     os.path.join(_arch,
-                                                 "recovered_from_autostash_%s.jsonl" % DAY)]
+                                                 "recovered_from_autostash_%s.jsonl" % DAY),
+                                    os.path.join(_arch,
+                                                 "recovered_from_stash_pass2_%s.jsonl" % DAY)]
         globals()["CLOSE_SOURCES"] = [os.path.join(tmp, "close_%s.json" % DAY),
                                       os.path.join(_arch, "close_%s.json" % DAY)]
 
@@ -728,7 +748,8 @@ def negative_test():
     _arch = ARCHIVE
     _tmp = _tf.mkdtemp(prefix="negtest_archive_")
     for _n in ("spot_%s.jsonl" % DAY, "minbars_%s.jsonl" % DAY,
-               "recovered_from_autostash_%s.jsonl" % DAY, "close_%s.json" % DAY):
+               "recovered_from_autostash_%s.jsonl" % DAY,
+               "recovered_from_stash_pass2_%s.jsonl" % DAY, "close_%s.json" % DAY):
         _src = os.path.join(_arch, _n)
         if os.path.exists(_src):
             _sh.copy(_src, os.path.join(_tmp, _n))
@@ -741,13 +762,15 @@ def negative_test():
         setg("ARCHIVE", _tmp)
         setg("SPOT_SOURCES", [os.path.join(REPO, "spot_%s.jsonl" % DAY),
                               os.path.join(_tmp, "spot_%s.jsonl" % DAY),
-                              os.path.join(_tmp, "recovered_from_autostash_%s.jsonl" % DAY)])
+                              os.path.join(_tmp, "recovered_from_autostash_%s.jsonl" % DAY),
+                              os.path.join(_tmp, "recovered_from_stash_pass2_%s.jsonl" % DAY)])
 
     def _restore():
         setg("ARCHIVE", _arch)
         setg("SPOT_SOURCES", [os.path.join(REPO, "spot_%s.jsonl" % DAY),
                               os.path.join(_arch, "spot_%s.jsonl" % DAY),
-                              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY)])
+                              os.path.join(_arch, "recovered_from_autostash_%s.jsonl" % DAY),
+                              os.path.join(_arch, "recovered_from_stash_pass2_%s.jsonl" % DAY)])
         _sh.rmtree(_tmp, ignore_errors=True)
 
     case("归档副本删掉一行（确定性构造漏档）", _use_tmp, _restore)
