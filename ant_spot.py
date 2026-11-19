@@ -458,29 +458,65 @@ def snapshot(full=False):
 
 
 def official_close():
-    """收盘官方价。实测 extended-trading?markettype=pre 在盘前返回
-    `previousInfo = ' Market Close: $83.0'`（上一交易日官方收盘价），
-    故盘后 markettype=post 的同一字段即本日官方收盘价。
-    同时并列记 info / summary / yahoo 的收盘快照以互校 —— 官方收盘价与最后一笔成交可能不同。"""
+    """本日官方收盘价。
+
+    **2026-11-19 实测更正。** 初版取 `extended-trading?markettype=post` 的
+    `data.previousInfo`，依据是盘前 `markettype=pre` 时该字段为
+    `' Market Close: $83.0'`，我据此推断盘后它会变成本日收盘价。**错了。**
+    21:09Z 实测它仍是 `' Market Close: $83.0'` —— 那是**上一交易日**的收盘参考值
+    （本日为上市首日，故等于发行价 83.0），收盘后也不更新为本日值。
+    代码里显式排除 83.0 的那道闸门因此一直没放行，没有把发行价误当收盘价定稿。
+
+    正确路径：盘后 `/api/quote/ANT/info` 的 `data.secondaryData` 持有本日正常时段收盘价，
+    `lastTradeTimestamp` 形如 `"Closed at Nov 19, 2026 4:00 PM ET"`。
+    （盘中时 secondaryData 为空或为盘前值，故此路径只在 marketStatus=After-Hours 后可用。）
+    `primaryData` 此时是盘后最新成交。
+
+    注意：公开端点不区分 NOCP（收盘撮合定出的官方收盘价）与最后一笔合并成交价，
+    故本值只断言「Nasdaq 报价页给出的本日收盘价」，并带 yahoo/cnbc 互校。
+    """
     t = now_s()
-    d, m   = get("nasdaq_post")
-    dd     = (d or {}).get("data") or {}
-    prev   = dd.get("previousInfo")
-    nocp   = None
-    if prev and "$" in str(prev):
-        nocp = num(str(prev).split("$")[-1])
-    rows   = (dd.get("tradeDetailTable") or {}).get("rows") or None
+    d, m = get("nasdaq_info")
+    dd   = (d or {}).get("data") or {}
+    sec  = dd.get("secondaryData") or {}
+    pri  = dd.get("primaryData") or {}
+    nocp = num(sec.get("lastSalePrice"))
+    stamp = sec.get("lastTradeTimestamp")
+    # 必须是「已收盘」的那个字段，否则不认：盘中 secondaryData 可能是盘前值
+    closed_ok = bool(stamp) and "Closed" in str(stamp)
+    if not closed_ok:
+        nocp = None
+
+    # 旧路径留证，便于以后的人看到它到底返回什么，不必再踩一遍
+    prev_raw, prev_m = None, None
+    try:
+        d2, prev_m = get("nasdaq_post")
+        prev_raw = ((d2 or {}).get("data") or {}).get("previousInfo")
+    except Exception:
+        pass
+
     return {
         "ts": iso(t), "t_epoch": round(t, 3), "trading_day": TRADING_DAY,
         "kind": "official_close", "collector": "ant_spot.py",
         "session": session_of(t),
         "official_close_usd": nocp,
-        "official_close_raw": prev,
-        "official_close_path": "/api/quote/ANT/extended-trading?markettype=post",
-        "official_close_field": "data.previousInfo",
-        "post_last_update_src": dd.get("lastUpdateInfo"),
-        "post_trade_rows": len(rows) if rows else 0,
+        "official_close_raw": sec.get("lastSalePrice"),
+        "official_close_path": "/api/quote/ANT/info?assetclass=stocks",
+        "official_close_field": "data.secondaryData.lastSalePrice",
+        "official_close_stamp_src": stamp,
+        "official_close_stamp_says_closed": closed_ok,
+        "official_close_is_realtime_src": sec.get("isRealTime"),
+        "official_close_net_chg_usd": num(sec.get("netChange")),
+        "official_close_chg_pct_src": sec.get("percentageChange"),
+        "market_status_src": dd.get("marketStatus"),
+        "post_last_usd": num(pri.get("lastSalePrice")),
+        "post_stamp_src": pri.get("lastTradeTimestamp"),
+        # 旧路径（已证伪，仅留证）
+        "deprecated_previousInfo_raw": prev_raw,
+        "deprecated_previousInfo_path": "/api/quote/ANT/extended-trading?markettype=post",
+        "deprecated_previousInfo_note": "上一交易日收盘参考值，非本日官方收盘价。勿用。",
         "fetch": m,
+        "fetch_deprecated_path": prev_m,
         "cross_check": snapshot(full=True),
     }
 
