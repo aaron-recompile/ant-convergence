@@ -3,3 +3,5 @@ __pycache__/
 *.log
 config.local.json
 nohup.out
+data/depth_*.jsonl
+data/latest_depth.json
