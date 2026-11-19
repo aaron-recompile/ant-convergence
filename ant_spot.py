@@ -547,6 +547,7 @@ def loop_quote():
     """快路线程：密集的 Nasdaq 现货序列。收盘前后 10 分钟加密到 2 秒。"""
     n = 0
     while True:
+        t_round_start = now_s()
         try:
             rec = snapshot_quote()
             emit(rec)
@@ -561,13 +562,25 @@ def loop_quote():
         elif session_of(t) == "regular":        iv = 3
         elif session_of(t) == "post":           iv = 10
         else:                                   iv = 60
-        time.sleep(iv)
+        # **定频,不是「取完再睡」。** 2026-11-19 实测:原来写的是 time.sleep(iv),
+        # 于是实际节奏 = iv + 取数耗时,sleep 2s 交付的是 4.18s、sleep 3s 交付 5.16s、
+        # sleep 10s 交付 12.13s(取数耗时中位 2.18s)。照代码常量理解采样密度会高估一倍。
+        # 扣掉本轮已耗时即可自我纠正;下限 0.5s 防止 iv 小于取数耗时时打爆端点。
+        #
+        # 注意这不能消除全部偏差:本路取数耗时中位 2.18s、p90 3.24s,
+        # **iv=2 这一档本身就低于取数耗时**,所以那一档的约束是延迟而非 sleep ——
+        # 定频后约 2.68s(= 2.18 + 0.5 下限),拿不到真 2 秒。
+        # 要真 2 秒得改成并发请求,那是另一个设计,且对 api.nasdaq.com 的压力更大。
+        # iv=3 / iv=10 两档则是净收益:纯粹去掉死时间,不超过原本意图的速率。
+        elapsed = now_s() - t_round_start
+        time.sleep(max(0.5, iv - elapsed))
 
 
 def loop_multi():
     """慢路线程：多源横截面 + 分钟 K 线。它的延迟不会影响快路密度。"""
     load_seen_bars(BARS_PATH)
     while True:
+        t_multi_start = now_s()
         try:
             emit(snapshot())
             if due("bars", 90):
@@ -580,7 +593,10 @@ def loop_multi():
                     print("[%s] bars +%d" % (iso(t), nb), flush=True)
         except Exception as e:
             print("[%s] ERR multi %s: %s" % (iso(now_s()), type(e).__name__, e), flush=True)
-        time.sleep(15 if session_of(now_s()) in ("regular", "post") else 60)
+        # 定频，同 loop_quote 的理由。本路 multi 一轮打 4–5 个源，
+        # 实测节奏 19.8s 对常量 15s（多出约 4.8s 的取数耗时）。
+        iv_m = 15 if session_of(now_s()) in ("regular", "post") else 60
+        time.sleep(max(1.0, iv_m - (now_s() - t_multi_start)))
 
 
 def loop_close():
