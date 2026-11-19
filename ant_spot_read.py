@@ -46,33 +46,82 @@ ARCHIVE = os.path.expanduser("~/ant-spot-archive")
 DAY     = "2026-11-19"
 ISSUE_PRICE = 83.0
 
+# 抢救档是**混装**的：当初把被 autostash 销毁的 7 条 spot 和 4 条 minbars
+# 一起写进了同一个文件。所以它同时出现在两个来源列表里，**靠记录形状分流，不靠文件分流**。
+#
+# 这个坑是加了「去重键必须存在」的断言之后才暴露的，而它原本的后果很严重：
+# 4 条 bar 记录没有 `ts`，在 R3 里全塌成 (None, None) 一个键 ——
+# 静默丢掉 3 条，剩 1 条 bar 混在 spot 序列里冒充快照；
+# 同时这 4 条 bar 从未进入 minbars 序列（BAR_SOURCES 里没有抢救档）。
+# **按文件猜内容就是这么出错的；按形状分流才对。**
+RECOVERED = os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY)
 SPOT_SOURCES = [
     os.path.join(REPO,    "spot_%s.jsonl" % DAY),
     os.path.join(ARCHIVE, "spot_%s.jsonl" % DAY),
-    os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY),
+    RECOVERED,
 ]
 BAR_SOURCES = [
     os.path.join(REPO,    "minbars_%s.jsonl" % DAY),
     os.path.join(ARCHIVE, "minbars_%s.jsonl" % DAY),
+    RECOVERED,
 ]
+
+
+def is_bar(r):
+    """bar 的形状：有 bar_ts 且有 src。"""
+    return r.get("bar_ts") is not None and r.get("src") is not None
+
+
+def is_spot(r):
+    """spot 快照的形状：有 ts，且不是 bar。"""
+    return bool(r.get("ts")) and not is_bar(r)
 CLOSE_SOURCES = [
     os.path.join(REPO,    "close_%s.json" % DAY),
     os.path.join(ARCHIVE, "close_%s.json" % DAY),
 ]
 
 
+# git 冲突标记。实测 2026-11-19：`data/binance_2026-11-19.jsonl` 里有 3 行这种标记
+# 并且已经提交推送到 origin/main —— autostash 的另一种失效方式：
+# 不是丢弃一侧，而是把两侧都写进文件并插入标记。
+# 逐行 try/except 的读法会**静默跳过**它们，所以这个 bug 过了几小时才被发现。
+# 本模块因此把标记当硬错误，不当「跳过一行」。
+CONFLICT_PREFIXES = ("<<<<<<<", "=======", ">>>>>>>", "|||||||")
+
+
+def _is_conflict_marker(ln):
+    r"""用 Python 判，不用 shell 正则。
+
+    教训（实测）：`grep -c "^<<<<<<<\|^=======$\|^>>>>>>>"` 只数到 2 而非 3 ——
+    BRE 里 `$` 只在整个表达式末尾（或 `\)` 之前）才是锚，处在交替式中间时是**字面量**，
+    于是 `^=======$` 退化成「以 `=======$` 开头」，一条也匹配不上。
+    换 `grep -E` 或去掉那个 `$` 都得 3。**漏的不是文件，是检测规则本身。**
+    """
+    if ln.startswith("=======") or ln.startswith("|||||||"):
+        return ln.strip("=|") == "" or ln[7:8] in ("", " ")
+    return ln.startswith("<<<<<<<") or ln.startswith(">>>>>>>")
+
+
 def _union(paths):
-    """R1：并集 + 整行精确去重。返回 (records, stats)。"""
+    """R1：并集 + 整行精确去重。返回 (records, stats)。
+
+    不可解析行与冲突标记都**计数并上报**，不静默跳过 —— 静默跳过就是
+    `binance_*.jsonl` 那个 bug 能活几小时的原因。"""
     seen, out = set(), []
-    stats = {"files": {}, "dupe_lines": 0, "unparsable": 0}
+    stats = {"files": {}, "dupe_lines": 0, "unparsable": 0, "conflict_markers": 0,
+             "conflict_files": []}
     for p in paths:
-        n_new = n_dup = n_bad = 0
+        n_new = n_dup = n_bad = n_cm = 0
         if not os.path.exists(p):
             stats["files"][p] = "缺失"
             continue
-        for ln in open(p, errors="replace"):
+        for lineno, ln in enumerate(open(p, errors="replace"), 1):
             ln = ln.strip()
             if not ln:
+                continue
+            if _is_conflict_marker(ln):
+                n_cm += 1
+                stats["conflict_files"].append("%s:%d %s" % (os.path.basename(p), lineno, ln[:24]))
                 continue
             if ln in seen:
                 n_dup += 1
@@ -83,9 +132,11 @@ def _union(paths):
                 n_new += 1
             except Exception:
                 n_bad += 1
-        stats["files"][p] = "新增 %d / 重复 %d / 不可解析 %d" % (n_new, n_dup, n_bad)
+        stats["files"][p] = ("新增 %d / 重复 %d / 不可解析 %d / 冲突标记 %d"
+                             % (n_new, n_dup, n_bad, n_cm))
         stats["dupe_lines"] += n_dup
         stats["unparsable"] += n_bad
+        stats["conflict_markers"] += n_cm
     return out, stats
 
 
@@ -94,6 +145,18 @@ def load_spot(verbose=False):
     recs, stats = _union(SPOT_SOURCES)
     rep = dict(stats)
     rep["raw"] = len(recs)
+
+    # 形状分流：混装的抢救档里还有 bar 记录，它们归 load_bars，不归这里
+    foreign = [r for r in recs if not is_spot(r)]
+    recs = [r for r in recs if is_spot(r)]
+    rep["dropped_not_spot_shaped"] = len(foreign)
+    unknown = [r for r in foreign if not is_bar(r)]
+    rep["unclassifiable"] = len(unknown)
+    if unknown:
+        raise RuntimeError(
+            "有 %d 条记录既不像 spot（无 ts）也不像 bar（无 bar_ts/src），"
+            "字段名可能变了。停下来看。样例: %s"
+            % (len(unknown), json.dumps(unknown[0], ensure_ascii=False)[:200]))
 
     # R2
     bad_oc = [r for r in recs
@@ -104,10 +167,22 @@ def load_spot(verbose=False):
                                     and r.get("official_close_field") == "data.previousInfo")]
     rep["R2_dropped_prevclose_records"] = len(bad_oc)
 
-    # R3
+    # R3。**先断言去重键存在。**
+    # 隐形失效（比漏读整个文件更糟）：R3 以 (ts, kind) 为键，若某天 `ts` 改了名或缺失，
+    # 所有记录都塌成 (None, None) 这一个键 —— 只留 1 条，却照样报告「去重 N 条」，
+    # 看起来自洽。另一个会话的 autorescue.py 因硬编码 `ts_utc` 对本路两个文件完全失明、
+    # 日志显示「新增 0」，是同一类错：**按字段名工作的代码，字段名一变就静默错。**
+    missing_ts = [r for r in recs if not r.get("ts")]
+    rep["R3_records_missing_ts"] = len(missing_ts)
+    if missing_ts:
+        raise RuntimeError(
+            "有 %d 条记录没有 `ts` 字段，去重键会塌成同一个值、静默丢掉几乎全部数据。"
+            "字段名可能变了，停下来看，不要让它继续跑。样例: %s"
+            % (len(missing_ts), json.dumps(missing_ts[0], ensure_ascii=False)[:200]))
+
     by_key, dropped = {}, 0
     for r in recs:
-        k = (r.get("ts"), r.get("kind"))
+        k = (r["ts"], r.get("kind"))
         if k in by_key:
             dropped += 1
             continue
@@ -133,6 +208,19 @@ def load_bars(primary="yahoo_1m", verbose=False):
     recs, stats = _union(BAR_SOURCES)
     rep = dict(stats)
     rep["raw"] = len(recs)
+
+    # 形状分流：混装的抢救档里还有 spot 快照，它们归 load_spot
+    before = len(recs)
+    recs = [r for r in recs if is_bar(r)]
+    rep["dropped_not_bar_shaped"] = before - len(recs)
+
+    # 同理：bar 依赖 `bar_ts` 与 `fetched_at`，缺了就不是「少几条」而是规则失效
+    no_bt = sum(1 for r in recs if r.get("bar_ts") is None)
+    no_fa = sum(1 for r in recs if not r.get("fetched_at"))
+    rep["bars_missing_bar_ts"] = no_bt
+    rep["bars_missing_fetched_at"] = no_fa
+    if recs and (no_bt == len(recs) or no_fa == len(recs)):
+        raise RuntimeError("所有 bar 都缺 bar_ts 或 fetched_at，字段名可能变了。停下来看。")
 
     kept, d4, d5 = [], 0, 0
     for r in recs:
@@ -275,6 +363,27 @@ def selftest():
         len(prim) > 200 and (mr["xcheck_max_dist_to_band_usd"] or 9) < 0.35,
         "%d 分钟, %d 个落在 nasdaq 候选区间内, 最大越界 $%s"
         % (len(prim), mr["xcheck_minutes_inside_band"], mr["xcheck_max_dist_to_band_usd"]))
+
+    chk("本路文件无 git 冲突标记",
+        sr["conflict_markers"] == 0 and br["conflict_markers"] == 0,
+        "spot %d / bars %d 处%s" % (sr["conflict_markers"], br["conflict_markers"],
+                                    ("  →  " + "; ".join((sr["conflict_files"] + br["conflict_files"])[:3]))
+                                    if (sr["conflict_files"] or br["conflict_files"]) else ""))
+    chk("无不可解析行（静默跳过是上个 bug 活几小时的原因）",
+        sr["unparsable"] == 0 and br["unparsable"] == 0,
+        "spot %d / bars %d 条" % (sr["unparsable"], br["unparsable"]))
+    chk("去重键字段存在（缺失会让记录塌成一条）",
+        sr.get("R3_records_missing_ts", 0) == 0
+        and br.get("bars_missing_bar_ts", 0) == 0,
+        "spot 缺 ts %d 条 / bars 缺 bar_ts %d 条"
+        % (sr.get("R3_records_missing_ts", 0), br.get("bars_missing_bar_ts", 0)))
+
+    chk("混装的抢救档按形状分流，两种记录都被认领",
+        sr.get("dropped_not_spot_shaped", 0) >= 4 and br.get("dropped_not_bar_shaped", 0) >= 7
+        and sr.get("unclassifiable", 1) == 0,
+        "spot 侧让出 %d 条 bar / bars 侧让出 %d 条快照 / 无法归类 %d"
+        % (sr.get("dropped_not_spot_shaped", 0), br.get("dropped_not_bar_shaped", 0),
+           sr.get("unclassifiable", -1)))
 
     oc = official_close()
     chk("官方收盘价可读且不是发行价",
