@@ -76,32 +76,65 @@ var V=[['binance_ANTUSDT','币安 ANTUSDT','#d4a35a'],
        ['hl_para_ANTH','Hyperliquid para:ANTH','#8b939e'],
        ['spot_ANT_nasdaq','Nasdaq ANT','#ffffff']];
 var THIN={'hl_para_ANTH':1};
+var IPO=83;
 function px(v){ if(!v) return null; var p=v.mark; if(p==null)p=v.last; if(p==null)p=v.price; return p==null?null:p; }
 function F(x,d){ if(x==null) return '—'; return Number(x).toFixed(d==null?2:d); }
 var S=[];
 
+// 增量取数：每个文件只取上次之后新增的字节（Range），而不是整文件重下。
+// 上市日 2 秒一条，整文件会涨到十几 MB，30 秒重下一次撑不住。
+var FS={};   // 文件名 -> {bytes, rows, frag}
+function parse(t,st){
+  t=st.frag+t; var L=t.split('\n'); st.frag = t.endsWith('\n') ? '' : L.pop();
+  if(t.endsWith('\n')) L.pop();
+  var out=[];
+  for(var i=0;i<L.length;i++){ if(!L[i].trim()) continue;
+    try{ out.push(JSON.parse(L[i])); }catch(e){} }
+  return out;
+}
+async function pull(f){
+  var st=FS[f];
+  try{
+    if(!st){
+      FS[f]=st={bytes:0,rows:[],frag:''};
+      var r=await fetch('data/'+f+'?'+Date.now(),{cache:'no-store'});
+      if(!r.ok) return;
+      var buf=await r.arrayBuffer(); st.bytes=buf.byteLength;
+      st.rows=parse(new TextDecoder().decode(buf),st);
+      return;
+    }
+    var r2=await fetch('data/'+f,{headers:{Range:'bytes='+st.bytes+'-'},cache:'no-store'});
+    if(r2.status===416) return;                       // 没有新字节
+    var b2=await r2.arrayBuffer();
+    if(r2.status===206){ st.bytes+=b2.byteLength; st.rows=st.rows.concat(parse(new TextDecoder().decode(b2),st)); }
+    else if(r2.status===200){                          // 不支持 Range：整文件重建
+      st.bytes=b2.byteLength; st.frag=''; st.rows=parse(new TextDecoder().decode(b2),st);
+    }
+  }catch(e){}
+}
+
 async function load(){
   var files=[];
-  try{ files = await (await fetch('data/index.json?'+Date.now())).json(); }
-  catch(e){ files=['ant_'+new Date().toISOString().slice(0,10)+'.jsonl']; }
-  var bucket={};
-  for(var i=0;i<files.length;i++){
-    try{
-      var t = await (await fetch('data/'+files[i]+'?'+Date.now())).text();
-      var L=t.split('\n');
-      for(var j=0;j<L.length;j++){
-        if(!L[j].trim()) continue;
-        var r=JSON.parse(L[j]);
-        var k=Math.floor(r.ts_epoch/10)*10;
-        if(!bucket[k]) bucket[k]={ts_epoch:k,ts_utc:new Date(k*1000).toISOString().slice(0,19)};
-        for(var f in r){ if(f!=='ts_epoch'&&f!=='ts_utc'&&r[f]) bucket[k][f]=r[f]; }
-      }
-    }catch(e){}
+  try{ files = await (await fetch('data/index.json?'+Date.now(),{cache:'no-store'})).json(); }
+  catch(e){}
+  var d=new Date().toISOString().slice(0,10);
+  ['ant_'+d+'.jsonl','binance_'+d+'.jsonl'].forEach(function(f){ if(files.indexOf(f)<0) files.push(f); });
+  await Promise.all(files.map(pull));
+
+  var bucket={}, n=0;
+  for(var fi=0;fi<files.length;fi++){
+    var st=FS[files[fi]]; if(!st) continue;
+    for(var i=0;i<st.rows.length;i++){
+      var r=st.rows[i], k=Math.floor(r.ts_epoch/10)*10; n++;
+      if(!bucket[k]) bucket[k]={ts_epoch:k,ts_utc:new Date(k*1000).toISOString().slice(0,19)};
+      for(var f2 in r){ if(f2!=='ts_epoch'&&f2!=='ts_utc'&&r[f2]) bucket[k][f2]=r[f2]; }
+    }
   }
   var rows=Object.keys(bucket).map(function(k){return bucket[k];});
   rows.sort(function(a,b){return a.ts_epoch-b.ts_epoch;});
-  S=rows; render();
+  S=rows; RAW=n; render();
 }
+var RAW=0;
 
 function render(){
   if(!S.length){ document.getElementById('m1').textContent='暂无数据'; return; }
@@ -116,7 +149,8 @@ function render(){
   }
   var newest=Math.max.apply(null,V.map(function(v){return age[v[0]]||0;}).concat([0]));
   document.getElementById('m1').textContent=new Date(newest*1000).toISOString().slice(0,19).replace('T',' ')+' UTC';
-  document.getElementById('m2').textContent=S.length.toLocaleString()+' 点';
+  document.getElementById('m2').textContent=RAW.toLocaleString()+' 点';
+
   var h='', marks=[];
   for(var i=0;i<V.length;i++){
     var k=V[i][0], lab=V[i][1], v=last[k], p=px(v), s='';
@@ -127,9 +161,10 @@ function render(){
       var oi=v.oi_usd!=null?('$'+(v.oi_usd/1e6).toFixed(0)+'M'):(v.oi_contracts!=null?Math.round(v.oi_contracts).toLocaleString():null);
       if(oi) s+='未平仓 '+oi+'<br>';
       if(v.funding_apr!=null) s+='资金费 '+(v.funding_apr>=0?'+':'')+(v.funding_apr*100).toFixed(2)+'%/年'+
-        ' <span style="opacity:.6">('+(v.funding_8h*100).toFixed(4)+'%/8h)</span><br>';
+        ' <span style="opacity:.6">('+(v.funding_8h*100).toFixed(4)+'%/'+(v.funding_hrs||8)+'h→8h)</span><br>';
       else if(v.funding!=null) s+='资金费 '+(v.funding*100).toFixed(4)+'% <span class="warn">口径未归一</span><br>';
       if(v.bid&&v.ask) s+='盘口 '+F(v.bid)+' / '+F(v.ask)+'<br>';
+      if(p!=null) s+='对发行价 <span class="'+(p>=IPO?'up':'dn')+'">'+(p>=IPO?'+':'')+F((p/IPO-1)*100)+'%</span><br>';
       var lag=newest-(age[k]||0);
       if(lag>60) s+='<span class="warn">'+Math.round(lag/60)+' 分钟前</span>';
     } else { s='—'; }
@@ -138,25 +173,25 @@ function render(){
   }
   document.getElementById('cards').innerHTML=h;
 
-  var IPO=83;
   if(marks.length){
     var avg=marks.reduce(function(a,m){return a+m[1];},0)/marks.length;
     document.getElementById('prem').innerHTML=
-      '<div class="big">$'+F(avg)+'</div><div class="note">七场所均价 · 对发行价 $'+IPO+' 为 '+
+      '<div class="big">$'+F(avg)+'</div><div class="note">'+marks.length+' 个场所均价 · 对发行价 $'+IPO+' 为 '+
       '<span class="'+(avg>=IPO?'up':'dn')+'">'+(avg>=IPO?'+':'')+F((avg/IPO-1)*100)+'%</span></div>';
   }
+
   var sv=last['binance_sent'];
   if(sv){
-    var sh='';
     function row(lab,r,lg){ if(r==null) return '';
-      return '<span style="display:inline-block;min-width:190px">'+lab+' <b class="'+(r>=1?'up':'dn')+'">'+F(r)+'</b>'+
+      return '<span style="display:inline-block;min-width:200px">'+lab+' <b class="'+(r>=1?'up':'dn')+'">'+F(r)+'</b>'+
              (lg!=null?' <span style="opacity:.6">('+(lg*100).toFixed(1)+'% 多)</span>':'')+'</span>'; }
-    sh+=row('散户账户多空比',sv.ls_account,sv.ls_account_long);
-    sh+=row('大户持仓多空比',sv.ls_top_pos,sv.ls_top_pos_long);
-    sh+=row('大户账户多空比',sv.ls_top_acct,sv.ls_top_acct_long);
-    sh+=row('吃单买卖比',sv.taker_bs,null);
-    document.getElementById('sent').innerHTML='<div style="font-family:var(--mono);font-size:12px;line-height:2.1">'+sh+'</div>';
+    document.getElementById('sent').innerHTML='<div style="font-family:var(--mono);font-size:12px;line-height:2.1">'+
+      row('散户账户多空比',sv.ls_account,sv.ls_account_long)+
+      row('大户持仓多空比',sv.ls_top_pos,sv.ls_top_pos_long)+
+      row('大户账户多空比',sv.ls_top_acct,sv.ls_top_acct_long)+
+      row('吃单买卖比',sv.taker_bs,null)+'</div>';
   }
+
   if(marks.length>1){
     var ps=marks.map(function(m){return m[1];});
     var lo=Math.min.apply(null,ps), hi=Math.max.apply(null,ps), sp=(hi/lo-1)*100;
@@ -175,27 +210,36 @@ function draw(){
   var W=cv.clientWidth, H=320, P=46;
   x.clearRect(0,0,W,H);
   var K=V.filter(function(v){return !THIN[v[0]];});
+  // 抽稀：点数封顶，否则上市日几万点画不动
+  var step=Math.max(1,Math.ceil(S.length/1400)), D=[];
+  for(var i=0;i<S.length;i+=step) D.push(S[i]);
+  if(D[D.length-1]!==S[S.length-1]) D.push(S[S.length-1]);
   var all=[];
-  for(var i=0;i<S.length;i++) for(var j=0;j<K.length;j++){ var p=px(S[i][K[j][0]]); if(p!=null) all.push(p); }
+  for(var i=0;i<D.length;i++) for(var j=0;j<K.length;j++){ var p=px(D[i][K[j][0]]); if(p!=null) all.push(p); }
   if(all.length<2){ x.fillStyle='#8b939e'; x.font='12px monospace'; x.fillText('采样中…',P,H/2); return; }
-  var lo=Math.min.apply(null,all)*0.998, hi=Math.max.apply(null,all)*1.002;
-  var X=function(i){return P+(W-P-16)*i/(S.length-1);};
+  var lo=Math.min.apply(null,all.concat([IPO]))*0.998, hi=Math.max.apply(null,all.concat([IPO]))*1.002;
+  var X=function(i){return P+(W-P-16)*i/(D.length-1);};
   var Y=function(v){return H-28-(H-28-16)*(v-lo)/((hi-lo)||1);};
   x.strokeStyle='#262a33'; x.lineWidth=1; x.font='10px monospace'; x.fillStyle='#8b939e';
   for(var g=0;g<=5;g++){ var val=lo+(hi-lo)*g/5, y=Y(val);
     x.beginPath(); x.moveTo(P,y); x.lineTo(W-16,y); x.stroke(); x.fillText('$'+val.toFixed(2),4,y+3); }
+  // 发行价基准线
+  x.strokeStyle='#cf6a57'; x.setLineDash([5,4]); x.lineWidth=1.2;
+  x.beginPath(); x.moveTo(P,Y(IPO)); x.lineTo(W-16,Y(IPO)); x.stroke(); x.setLineDash([]);
+  x.fillStyle='#cf6a57'; x.fillText('发行价 $'+IPO,P+4,Y(IPO)-4);
   for(var m=0;m<K.length;m++){
     var key=K[m][0], col=K[m][2], started=false;
     x.strokeStyle=col; x.lineWidth=(key==='spot_ANT_nasdaq')?2.6:1.6; x.beginPath();
-    for(var n=0;n<S.length;n++){
-      var p2=px(S[n][key]); if(p2==null) continue;
+    for(var n=0;n<D.length;n++){
+      var p2=px(D[n][key]); if(p2==null) continue;
       if(!started){ x.moveTo(X(n),Y(p2)); started=true; } else { x.lineTo(X(n),Y(p2)); }
     }
     if(started) x.stroke();
   }
   document.getElementById('chn').textContent=
-    S[0].ts_utc.slice(0,10)+'  '+S[0].ts_utc.slice(11,16)+' → '+S[S.length-1].ts_utc.slice(11,16)+' UTC';
+    S[0].ts_utc.slice(0,10)+'  '+S[0].ts_utc.slice(11,16)+' → '+S[S.length-1].ts_utc.slice(11,16)+' UTC'+
+    (step>1?('  ·  每 '+step+' 桶取 1 点'):'');
 }
 
-load(); setInterval(load,30000); window.addEventListener('resize',draw);
+load(); setInterval(load,20000); window.addEventListener('resize',draw);
 </script></body></html>
