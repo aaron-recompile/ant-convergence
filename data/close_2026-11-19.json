@@ -1,0 +1,66 @@
+{
+ "ts": "2026-11-19T21:12:17Z",
+ "t_epoch": 1795122737.323,
+ "trading_day": "2026-11-19",
+ "kind": "official_close_final",
+ "collector": "spot_close_fix.py",
+ "sources": {
+  "nasdaq_info_secondaryData": {
+   "ok": true,
+   "ms": 1124,
+   "path": "/api/quote/ANT/info?assetclass=stocks",
+   "field": "data.secondaryData.lastSalePrice",
+   "close_usd": 97.17,
+   "raw": "$97.17",
+   "stamp_src": "Closed at Nov 19, 2026 4:00 PM ET",
+   "is_realtime_src": true,
+   "net_chg_usd": 14.17,
+   "chg_pct_src": "+17.07%",
+   "market_status_src": "After-Hours",
+   "day_range_src": "92.72 - 115.10",
+   "post_last_usd": 95.7463,
+   "post_stamp_src": "Nov 19, 2026 4:12 PM ET",
+   "vol_raw_post_src": "847,114,783.669897"
+  },
+  "nasdaq_extended_post_previousInfo": {
+   "ok": true,
+   "ms": 2972,
+   "path": "/api/quote/ANT/extended-trading?markettype=post",
+   "field": "data.previousInfo",
+   "raw": " Market Close: $83.0",
+   "note": "实测为上一交易日收盘参考值，非本日官方收盘价。本日=上市首日故等于发行价 83.0。"
+  },
+  "yahoo_meta": {
+   "ok": true,
+   "ms": 184,
+   "path": "v8/finance/chart/ANT?range=1d&interval=1m",
+   "field": "meta.regularMarketPrice",
+   "close_usd": 97.17,
+   "market_time_src": 1795122001,
+   "market_time_utc": "2026-11-19T21:00:01Z",
+   "prev_close_usd": 83.0,
+   "vol_shares_regular": 839738996
+  },
+  "cnbc": {
+   "ok": true,
+   "ms": 347,
+   "path": "quote.cnbc.com/restQuote",
+   "field": "last",
+   "close_usd": 97.17,
+   "stamp_src": "4:00 PM EST",
+   "prev_close_usd": 83.0,
+   "vol_raw_src": "839,639,570"
+  }
+ },
+ "official_close_usd": 97.17,
+ "finalized": true,
+ "reject_why": [],
+ "cross_check_agree_n": 2,
+ "cross_check_values": [
+  97.17,
+  97.17
+ ],
+ "cross_check_unanimous": true,
+ "regular_close_stamp_src": "Closed at Nov 19, 2026 4:00 PM ET",
+ "caveat": "公开端点不区分 NOCP（收盘撮合定出的官方收盘价）与最后一笔合并成交价。本值取自 Nasdaq 自己报价页的收盘价字段，三源一致，但不能据此断言它就是 NOCP。api.nasdaq.com 的 historical 端点在 21:10Z 仍返回 totalRecords=0，本日日线尚未发布；日线出来后可据其 close 复核。"
+}
