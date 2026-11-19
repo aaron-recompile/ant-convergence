@@ -20,6 +20,7 @@ import calendar
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,7 +28,16 @@ import time
 HOME = os.path.expanduser("~")
 REPO = os.path.join(HOME, "ant-convergence")
 DATA = os.path.join(REPO, "data")
-OLD_PID = 13784                      # 01:05Z 之前在跑的那个
+# **不要把「我记下来的 pid」当输入。** 初版写的是 OLD_PID = 13784 —— 那是我上一轮
+# 观察到的数，不是检查时实测的。后果比假 FAIL 坏：若守护因别的原因在 01:05Z 前
+# 重启过一次，当前 pid 自然就不是 13784 了，A 级那条「pid 已变」会**假 PASS**，
+# 于是在 arm_newcode 根本没跑的情况下报告「重启成功」。
+#
+# 改为从 arm_newcode.log 里**实测**它到底杀了哪个 pid（它自己会写「已 kill <pid>」），
+# 并要求它写过「任务结束」。这样判据链是：
+#   任务确实动过手（它自己的日志） → 它杀的那个 pid 已不在 → 当前 pid 与之不同
+# 每一环都是读出来的，没有一环来自记忆。
+KILLED_PID_RE = re.compile(r"已 kill (\d+)")
 DAY_A = "2026-11-19"
 DAY_B = "2026-11-20"
 SAMPLE_GAP = 40                      # 取样间隔，需大于最慢一档的采样周期
@@ -112,9 +122,20 @@ def stage_a():
     arm_log = os.path.join(REPO, "arm_newcode.log")
     arm_bang = _count_in(arm_log, "!!")
 
+    # 实测：arm_newcode 自己记下它杀了哪个 pid、以及它是否跑完
+    arm_txt = io.open(arm_log, errors="replace").read() if os.path.exists(arm_log) else ""
+    killed = KILLED_PID_RE.search(arm_txt)
+    killed_pid = killed.group(1) if killed else None
+    arm_done = "任务结束" in arm_txt
+
     checks = [
-        ("pid 已变（不再是重启前的 %d）" % OLD_PID,
-         pid.isdigit() and int(pid) != OLD_PID, "现 pid=%s" % (pid or "无")),
+        ("arm_newcode 确实动过手（日志里有「已 kill <pid>」）",
+         killed_pid is not None, "被杀的 pid=%s" % (killed_pid or "无此记录")),
+        ("arm_newcode 跑完了（日志里有「任务结束」）",
+         arm_done, "有" if arm_done else "**无**"),
+        ("当前 pid 与被杀的那个不同（实测，不用记下来的数）",
+         bool(killed_pid) and pid.isdigit() and pid != killed_pid,
+         "现 pid=%s / 被杀=%s" % (pid or "无", killed_pid or "无")),
         ("ant_spot 实例数 == 1", cnt == "1", "实测 %s" % cnt),
         ("主采集器实例数 == 1", main == "1", "实测 %s"
          % main),
@@ -126,7 +147,8 @@ def stage_a():
         ("arm_newcode.log 里没有 !!", arm_bang == 0, "!! 出现 %d 次" % arm_bang),
     ]
     modes = [
-        "pid 没变 ⇒ 预约任务没跑或 kill 失败；查 arm_newcode.log 是否有「任务结束」。",
+        "日志里没有「已 kill」⇒ 预约任务没跑到那一步；查它是否还在等（它每 60 秒醒一次）。",
+        "有「已 kill」但当前 pid 与之相同 ⇒ kill 没生效（权限？进程忽略 TERM？）。",
         "实例数 != 1 ⇒ 两进程并写（会产生同秒双条，见 7.6）；按 pid 杀掉多余的那个。",
         "自检 0 次命中 ⇒ **跑的还是旧代码**，第二级必然失败，且会长得像换天逻辑有问题。",
         "主采集器 != 1 ⇒ 与本路无关，但必须人工查（本任务从不碰它）。",
