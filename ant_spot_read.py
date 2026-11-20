@@ -109,6 +109,40 @@ CLOSE_SOURCES = [
 ]
 
 
+def _set_day(d):
+    """把**所有**按日派生的全局量重算一遍 —— 唯一的真相在这个函数里。
+
+    7.46：初版的 `--day` 只重算了 SPOT_SOURCES / BAR_SOURCES / CLOSE_SOURCES
+    三个，漏了 RECOVERED / RECOVERED2，而 `archive_inventory()` 直接用它们。
+    于是 `--day 2026-11-20` 之下，归档侧会被塞进 **11-19** 的抢救档行。
+    方向只会放松不会误报（归档侧变大 → 「仓内每行都在归档里」更容易通过），
+    所以它不会报警，只会让一条不变量悄悄变弱。2026-11-20 实测命中 0 行，影响为零；
+    **机制仍在，换一天就可能不为零。**
+
+    一般形状：**按日派生 ≠ 可重按日派生。** 导入时从 DAY 算出来的名字，
+    只对导入时那个 DAY 成立；事后重绑 DAY 不会重新派生它。
+    我做过的「硬编码日期」普查扫不到这一类 —— 它看起来已经参数化了。
+    """
+    global DAY, RECOVERED, RECOVERED2, SPOT_SOURCES, BAR_SOURCES, CLOSE_SOURCES
+    DAY = d
+    RECOVERED  = os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY)
+    RECOVERED2 = os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)
+    SPOT_SOURCES = [os.path.join(REPO,    "spot_%s.jsonl" % DAY),
+                    os.path.join(ARCHIVE, "spot_%s.jsonl" % DAY),
+                    RECOVERED, RECOVERED2]
+    BAR_SOURCES  = [os.path.join(REPO,    "minbars_%s.jsonl" % DAY),
+                    os.path.join(ARCHIVE, "minbars_%s.jsonl" % DAY),
+                    RECOVERED, RECOVERED2]
+    CLOSE_SOURCES = [os.path.join(REPO,    "close_%s.json" % DAY),
+                     os.path.join(ARCHIVE, "close_%s.json" % DAY)]
+    return DAY
+
+
+# 上面那几个模块级字面量保留着它们各自的注释（那些注释是文档），
+# 但**生效的值一律由 _set_day 给出**，以免两处计算再次走岔。
+_set_day(DAY)
+
+
 # git 冲突标记。实测 2026-11-19：`data/binance_2026-11-19.jsonl` 里有 3 行这种标记
 # 并且已经提交推送到 origin/main —— autostash 的另一种失效方式：
 # 不是丢弃一侧，而是把两侧都写进文件并插入标记。
@@ -834,18 +868,7 @@ def negative_test():
 
 if __name__ == "__main__":
     if "--day" in sys.argv:
-        _d = sys.argv[sys.argv.index("--day") + 1]
-        DAY = _d
-        SPOT_SOURCES = [os.path.join(REPO, "spot_%s.jsonl" % DAY),
-                        os.path.join(ARCHIVE, "spot_%s.jsonl" % DAY),
-                        os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY),
-                        os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)]
-        BAR_SOURCES = [os.path.join(REPO, "minbars_%s.jsonl" % DAY),
-                       os.path.join(ARCHIVE, "minbars_%s.jsonl" % DAY),
-                       os.path.join(ARCHIVE, "recovered_from_autostash_%s.jsonl" % DAY),
-                       os.path.join(ARCHIVE, "recovered_from_stash_pass2_%s.jsonl" % DAY)]
-        CLOSE_SOURCES = [os.path.join(REPO, "close_%s.json" % DAY),
-                         os.path.join(ARCHIVE, "close_%s.json" % DAY)]
+        _set_day(sys.argv[sys.argv.index("--day") + 1])
 
     if "--simulate-backfill" in sys.argv:
         sys.exit(0 if simulate_backfill() else 1)
