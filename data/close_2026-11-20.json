@@ -1,13 +1,13 @@
 {
- "ts": "2026-11-20T21:14:01Z",
- "t_epoch": 1795209241.154,
+ "ts": "2026-11-20T21:40:34Z",
+ "t_epoch": 1795210834.083,
  "trading_day": "2026-11-20",
  "kind": "official_close_final",
  "collector": "spot_close_fix.py",
  "sources": {
   "nasdaq_info_secondaryData": {
    "ok": true,
-   "ms": 3100,
+   "ms": 1314,
    "path": "/api/quote/ANT/info?assetclass=stocks",
    "field": "data.secondaryData.lastSalePrice",
    "close_usd": 88.91,
@@ -18,13 +18,13 @@
    "chg_pct_src": "-8.50%",
    "market_status_src": "After-Hours",
    "day_range_src": "83.05 - 92.56",
-   "post_last_usd": 88.3474,
-   "post_stamp_src": "Nov 20, 2026 4:13 PM ET",
-   "vol_raw_post_src": "395,294,412.448031"
+   "post_last_usd": 88.311,
+   "post_stamp_src": "Nov 20, 2026 4:40 PM ET",
+   "vol_raw_post_src": "396,025,170.152197"
   },
   "nasdaq_extended_post_previousInfo": {
    "ok": true,
-   "ms": 1869,
+   "ms": 2466,
    "path": "/api/quote/ANT/extended-trading?markettype=post",
    "field": "data.previousInfo",
    "raw": " Market Close: $97.17",
@@ -32,28 +32,28 @@
   },
   "yahoo_meta": {
    "ok": true,
-   "ms": 168,
+   "ms": 250,
    "path": "v8/finance/chart/ANT?range=1d&interval=1m",
    "field": "meta.regularMarketPrice",
    "close_usd": 88.91,
    "market_time_src": 1795208402,
    "market_time_utc": "2026-11-20T21:00:02Z",
    "prev_close_usd": 97.17,
-   "vol_shares_regular": 394648956
+   "vol_shares_regular": 395307616
   },
   "cnbc": {
    "ok": true,
-   "ms": 107,
+   "ms": 167,
    "path": "quote.cnbc.com/restQuote",
    "field": "last",
-   "close_usd": 88.3,
-   "stamp_src": "4:00 PM EST",
+   "close_usd": 88.91,
+   "stamp_src": "4:15 PM EST",
    "prev_close_usd": 97.17,
-   "vol_raw_src": "346,879,722"
+   "vol_raw_src": "346,879,738"
   },
   "nasdaq_historical": {
    "ok": true,
-   "ms": 2201,
+   "ms": 1881,
    "path": "/api/quote/ANT/historical",
    "field": "tradesTable.rows[date=11/20/2026]",
    "totalRecords": 1,
@@ -76,12 +76,12 @@
  "current_trading_day_at_run": "2026-11-20",
  "is_past_day_rerun": false,
  "primary_source_used": "nasdaq_info_secondaryData",
- "cross_check_agree_n": 1,
+ "cross_check_agree_n": 2,
  "cross_check_values": [
   88.91,
-  88.3
+  88.91
  ],
- "cross_check_unanimous": false,
+ "cross_check_unanimous": true,
  "cross_check_by_source": {
   "yahoo_meta": {
    "close_usd": 88.91,
@@ -89,9 +89,9 @@
    "agrees": true
   },
   "cnbc": {
-   "close_usd": 88.3,
+   "close_usd": 88.91,
    "field": "last",
-   "agrees": false
+   "agrees": true
   },
   "nasdaq_historical": {
    "close_usd": null,
@@ -99,9 +99,7 @@
    "agrees": null
   }
  },
- "cross_check_dissenters": [
-  "cnbc"
- ],
+ "cross_check_dissenters": [],
  "regular_close_stamp_src": "Closed at Nov 20, 2026 4:00 PM ET",
- "caveat": "公开端点不区分 NOCP（收盘撮合定出的官方收盘价）与最后一笔合并成交价。本值取自 Nasdaq 自己报价页的收盘价字段（戳 says_closed=True），不能据此断言它就是 NOCP。**互校不一致，异议源：['cnbc']。**Nasdaq 日线尚未发布本日行（row_present=false，按 T+1 填充；查询窗口 2026-11-19..2026-11-21 内共 1 行，那些是更早的交易日）；隔日重跑本脚本即可据其 close 裁决。"
+ "caveat": "公开端点不区分 NOCP（收盘撮合定出的官方收盘价）与最后一笔合并成交价。本值取自 Nasdaq 自己报价页的收盘价字段（戳 says_closed=True），不能据此断言它就是 NOCP。互校一致。Nasdaq 日线尚未发布本日行（row_present=false，按 T+1 填充；查询窗口 2026-11-19..2026-11-21 内共 1 行，那些是更早的交易日）；隔日重跑本脚本即可据其 close 裁决。"
 }
