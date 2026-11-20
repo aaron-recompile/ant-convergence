@@ -137,15 +137,43 @@ def binance():
     if o: r["oi_contracts"]=float(o["openInterest"])
     return r
 
+# ── 取数时刻戳（2026-11-20 加）──────────────────────────────
+#  每个场所块都带 obs_epoch_f（该场所 HTTP **返回**时的全精度 epoch）与 ms（该次
+#  取数耗时）。**观测时刻 ∈ [obs_epoch_f - ms/1000, obs_epoch_f]**，一条规则，无例外。
+#  为什么顶层 ts_utc 不能用来做秒级比较，三个独立的原因：
+#   (a) ts_utc 取自本轮**开始**（sample() 第一行），在任何 HTTP 之前；
+#   (b) 它被 timespec="seconds" **向下截断**，真实开始时刻 ∈ [ts_utc, ts_utc+1)；
+#   (c) 各源是**并行**取的（ThreadPoolExecutor），所以偏移量是「该源自己的耗时」，
+#       不是各源耗时之和 —— 这一点和顺序取数的采集器相反，不能照搬对方的放宽量。
+#  还有第四个原因，而它比上面三个都大：**次级场所走 _throttled 缓存**，
+#  缓存命中时返回的是上一次取数的值，可比本轮早 every 秒（gate/bitget/kucoin 15s、
+#  binance_sent 60s）；取数失败时还会无标记地返回更旧的缓存。
+#  所以 obs_epoch_f 必须由**首次取数**时写入、随缓存字典一起被带回来，
+#  而不是每轮重写 —— 否则这个字段会把「15 秒前的观测」证明成「刚取的」，
+#  那比没有这个字段更糟：它看起来界定了观测时刻，其实没有。
+def _stamp(v,t0,t1=None):
+    if isinstance(v,dict) and "obs_epoch_f" not in v:
+        t1=time.time() if t1 is None else t1
+        v["obs_epoch_f"]=round(t1,3); v["ms"]=int((t1-t0)*1000)
+    return v
+
+def _timed(fn):
+    def g():
+        t0=time.time()
+        return _stamp(fn(),t0)
+    return g
+
 # ── 次级场所：带节流缓存，最快 15 秒一次，不拖慢加密时的主循环 ──
 _cache={}
 def _throttled(key,fn,every=15):
     now=time.time(); c=_cache.get(key)
     if c and now-c[0]<every: return dict(c[1]) if c[1] else None
-    v=None
+    v=None; _t0=time.time()
     try: v=fn()
     except Exception: v=None
-    if v is not None: _cache[key]=(now,dict(v))
+    if v is not None:
+        _stamp(v,_t0)          # 缓存里存的是带戳的字典，命中时原样带回首次取数的时刻
+        _cache[key]=(now,dict(v))
     elif c: return dict(c[1]) if c[1] else None
     else: _cache[key]=(now,None)
     return v
@@ -348,11 +376,12 @@ def bn_sent(): return _throttled("bn_sent",_bn_sent,every=60)
 def sample(only=None,with_para=True):
     """only: None=全部 | 'binance' 只采币安 | 'noBinance' 不采币安"""
     ts=datetime.datetime.now(datetime.timezone.utc)
-    r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp())}
+    r={"ts_utc":ts.isoformat(timespec="seconds"),"ts_epoch":int(ts.timestamp()),
+       "ts_epoch_f":round(ts.timestamp(),3)}   # ts_epoch 是 int() 向下截断，秒级比较用这个
     if only=="binance":
         # 现货两台都采：首笔成交是全项目最关键的一条，不能单点
         with ThreadPoolExecutor(max_workers=3) as ex:
-            fb=ex.submit(binance); fs=ex.submit(bn_sent); fp=ex.submit(spot_ant)
+            fb=ex.submit(_timed(binance)); fs=ex.submit(_timed(bn_sent)); fp=ex.submit(_timed(spot_ant))
             try: r["binance_ANTUSDT"]=norm_funding("binance_ANTUSDT",fb.result(timeout=12))
             except Exception: r["binance_ANTUSDT"]=None
             try: r["binance_sent"]=fs.result(timeout=12)
@@ -368,7 +397,7 @@ def sample(only=None,with_para=True):
         jobs.insert(0,("binance_ANTUSDT",binance)); jobs.append(("binance_sent",bn_sent))
     if with_para: jobs.append(("hl_para_ANTH",lambda: hyperliquid("para","para:ANTH")))
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-        futs={k:ex.submit(fn) for k,fn in jobs}
+        futs={k:ex.submit(_timed(fn)) for k,fn in jobs}
         for k,f in futs.items():
             try: r[k]=norm_funding(k,f.result(timeout=12))
             except Exception: r[k]=None
