@@ -176,6 +176,16 @@ def _union(paths):
     不可解析行与冲突标记都**计数并上报**，不静默跳过 —— 静默跳过就是
     `binance_*.jsonl` 那个 bug 能活几小时的原因。"""
     seen, out = set(), []
+    # **`dupe_lines` 是什么 —— 按「第五问」补上的解释。**
+    # 它数的是「在后一个来源里出现、且与已读到的某行**逐字节相同**」的行数。
+    # 本路实测 spot 6,302 / bars 2,493 —— **它应该很大,而且越大越好**:
+    # 仓外归档是仓内文件的并集副本,所以仓内几乎每一行都会在归档里再出现一次。
+    # **它不是瑕疵,它是「归档确实在镜像仓内」的证据。**
+    #
+    # 为什么必须解释:本模块每次运行都打印这个数,而它比任何瑕疵计数大两到三个数量级。
+    # 看到「重复 6302」的人会把它当成问题 —— 而 7.42 那条第五问正是
+    # 「我的输出里有哪个数是我印了却没解释的」。**这就是本路的那一个。**
+    # 真正该为 0 的是 `unparsable` 与 `conflict_markers`(自测已钉死为 0)。
     stats = {"files": {}, "dupe_lines": 0, "unparsable": 0, "conflict_markers": 0,
              "conflict_files": []}
     for p in paths:
@@ -200,7 +210,7 @@ def _union(paths):
                 n_new += 1
             except Exception:
                 n_bad += 1
-        stats["files"][p] = ("新增 %d / 重复 %d / 不可解析 %d / 冲突标记 %d"
+        stats["files"][p] = ("新增 %d / 已见过(逐字节相同,正常) %d / 不可解析 %d / 冲突标记 %d"
                              % (n_new, n_dup, n_bad, n_cm))
         stats["dupe_lines"] += n_dup
         stats["unparsable"] += n_bad
