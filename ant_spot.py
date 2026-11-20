@@ -812,15 +812,35 @@ def loop_close():
                 oc = official_close()
                 emit(oc)
                 got = oc.get("official_close_usd")
-                # 盘前该字段是上一交易日的 83.0（发行价）；必须排除，
-                # 否则会把发行价当成本日官方收盘价定稿 —— 全项目最不能错的一个数。
-                if got is not None and abs(got - ISSUE_PRICE) > 1e-9:
+                # **【更正 2026-11-20，7.45 / 7.49.4】** 这里原先是
+                # `abs(got - ISSUE_PRICE) > 1e-9` —— 排除发行价 83.0。
+                # 那道闸门是为旧的 `previousInfo` 路径设的（盘前该字段是上一交易日
+                # 的 83.0），而那条路径已废弃。新路径 `secondaryData.lastSalePrice`
+                # 要求戳含 "Closed"（见 official_close() 的 closed_ok），返回的本来
+                # 就是本日真实收盘价，**83.00 在其上是一个合法价格**。
+                #
+                # 于是那道闸门不再保护任何东西，只剩一种作用：若某日正好收在 83.00，
+                # 就永久拒收该日官方收盘价，且只在日志里印 "close pending"，
+                # 一整场重试到进程自杀 —— 一个只会在日志里说话的失败（7.33 的形状）。
+                # **2026-11-20 实测日内低点 83.05，距 83.00 仅 $0.05，五源一致** ——
+                # 误伤风险不再是假想的。
+                #
+                # 现在：`got is not None` 即定稿（口径由 closed_ok 守），
+                # 恰好等于发行价时记一条告警，不拒收。
+                # 与 spot_close_fix.py 的改法一致，那一侧已在 11-19/11-20 两天验过。
+                if got is not None:
+                    if abs(got - ISSUE_PRICE) < 1e-9:
+                        oc["warn"] = ["close_equals_issue_price_83_coincidence"]
+                        print("[%s] WARN 本日收盘价恰好等于发行价 $%s —— 已定稿并标注，"
+                              "不再拒收（7.45）" % (iso(t), got), flush=True)
                     with open(CLOSE_PATH, "w") as f:
                         json.dump(oc, f, ensure_ascii=False, indent=1)
                     close_done = True
                     print("[%s] OFFICIAL CLOSE = $%s" % (iso(t), got), flush=True)
                 else:
-                    print("[%s] close pending (raw=%r)" %
+                    # got 为 None 只有一个来源：official_close() 里 closed_ok 不通过
+                    # （戳不含 "Closed"），即「还没收盘」。那才是该等的情形。
+                    print("[%s] close pending（戳未说 Closed）(raw=%r)" %
                           (iso(t), oc.get("official_close_raw")), flush=True)
             except Exception as e:
                 print("[%s] ERR close %s: %s" % (iso(now_s()), type(e).__name__, e), flush=True)
