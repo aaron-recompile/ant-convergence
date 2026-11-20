@@ -28,11 +28,44 @@ alive() {
   return 0
 }
 
+# 本场是否还要跑 —— 问 ant_spot.py，不在这里复算。
+# 唯一真相是 ant_spot.py 的 TRADING_DAY / POST_CLOSE 推导；守护复算一遍
+# 就会多出一处要同步的地方（7.46 那个形状）。
+session_pending() {
+  /opt/homebrew/bin/python3 ant_spot.py --session-pending >/dev/null 2>&1
+}
+
+# 状态变化才记日志。否则退避期间每 300 秒一行，一夜 96 行噪声。
+LAST_STATE=""
+note() {
+  [ "$1" = "$LAST_STATE" ] && return 0
+  LAST_STATE="$1"
+  # 空消息只换状态、不写日志 —— 否则 running 这个状态会写出一行
+  # 只有时间戳、没有内容的日志（部署当天实测到一行）。
+  [ -n "$2" ] || return 0
+  echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $2" >> "$LOG"
+}
+
 while true; do
-  if ! alive; then
+  if alive; then
+    LAST_STATE=running
+    sleep 15
+    continue
+  fi
+
+  # **拉起前先问本场要不要跑。** 2026-11-20 实测:POST_CLOSE 是 20:00 ET,
+  # 而 derive_trading_day 的切换点是 04:00 ET —— 中间 8 小时推出的是同一个
+  # 交易日,于是新进程启动即退,守护 15 秒再拉一次,01:00Z–09:00Z 空转约 1920 次。
+  # 这是「本场结束即退出」(修跨日 bug)与「判死就拉起」两个各自正确的东西
+  # 合起来产生的,单独看哪一个都没错。详见 数据说明 7.50。
+  if session_pending; then
     nohup /opt/homebrew/bin/python3 ant_spot.py >> spot.log 2>&1 &
     echo $! > "$PIDFILE"
-    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 拉起 ant_spot.py pid=$(cat $PIDFILE)" >> "$LOG"
+    LAST_STATE=""     # 拉起是个事件，总要记一行
+    note launched "拉起 ant_spot.py pid=$(cat $PIDFILE)"
+    sleep 15
+  else
+    note waiting "本场已结束（ant_spot.py --session-pending 返回 1），退避 300 秒等下一个交易日"
+    sleep 300
   fi
-  sleep 15
 done

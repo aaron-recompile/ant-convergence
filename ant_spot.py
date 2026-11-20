@@ -684,8 +684,22 @@ def exit_if_session_over(tag):
     **但它只覆盖「新启动」，不覆盖「长跑进程跨过场次边界」** ——
     而我在 7.22 写「操作后果已消除」时，恰好漏掉了后一种。
 
-    所以本函数：本场结束即 `os._exit(0)`。守护（spot_runner.sh，15 秒一查）会拉起
-    一个新进程，它在 import 时重新推导 TRADING_DAY，于是自动写到新一天的文件。
+    所以本函数：本场结束即 `os._exit(0)`。守护（spot_runner.sh）会拉起一个新进程，
+    它在 import 时重新推导 TRADING_DAY。
+
+    **【更正 2026-11-20，7.50】上面那句「于是自动写到新一天的文件」是错的，**
+    而它从未被测试过 —— 它今晚（11-21 01:00Z）才第一次执行。实测：
+    `POST_CLOSE` 是 20:00 ET，而 `derive_trading_day` 的切换点是 **04:00 ET**。
+    两者之间隔着 8 小时，在这 8 小时里推导出的仍是**同一个**交易日，
+    于是新进程的 `POST_CLOSE` 已过 ⇒ 启动即退 ⇒ 守护 15 秒后再拉起
+    ⇒ **01:00Z–09:00Z 空转约 1920 次**（逐小时实测，见 7.50）。
+
+    不是数据损失（本场已结束），但每次启动都会打一条启动心跳，
+    于是「启动心跳」这个信号被淹成噪声 —— 正是 7.33 那个形状。
+
+    修法在守护侧：拉起前先用 `--session-pending` 问一句，已结束则退避 300 秒。
+    **不能改成让本进程睡到下一场** —— `TRADING_DAY` 及其全部派生常量是 import 时
+    算的（7.46），长寿进程改不了日期。所以退出是对的，该等的是守护。
     用 `os._exit` 而不是 `sys.exit`：本进程是多线程的，`sys.exit` 只结束调用线程。
     """
     if now_s() < POST_CLOSE:
@@ -828,5 +842,14 @@ if __name__ == "__main__":
         print(json.dumps(sample(), ensure_ascii=False, indent=1))
     elif len(sys.argv) > 1 and sys.argv[1] == "--close":
         print(json.dumps(official_close(), ensure_ascii=False, indent=1))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--session-pending":
+        # 给守护用：本场还要不要跑？退出码 0=要跑，1=已结束。
+        # 唯一真相仍在本文件（TRADING_DAY / POST_CLOSE 的推导），守护不复算。
+        # 按本路的规矩，把时刻换算成人读的形式打出来（硬编码时刻要能被看见）。
+        _n = now_s()
+        _pending = _n < POST_CLOSE
+        print("trading_day=%s  now=%s  POST_CLOSE=%s  pending=%s"
+              % (TRADING_DAY, iso(_n), iso(POST_CLOSE), _pending), flush=True)
+        sys.exit(0 if _pending else 1)
     else:
         main()
