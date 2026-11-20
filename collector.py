@@ -13,7 +13,8 @@ append-only JSONL 写入 Google Drive（本机会卖，不留本地）。
 币安对美国 IP 封锁：优先直连，失败自动改走 SOCKS 127.0.0.1:1086（新加坡节点）。
 每条记录都标注用了哪条路径，便于事后判断数据缺口成因。
 """
-import json,os,sys,time,subprocess,urllib.request,datetime
+import json,os,sys,time,subprocess,urllib.request,datetime,re
+from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -279,20 +280,43 @@ def _spot_yahoo():
             "placeholder":placeholder,
             "src":"yahoo","via":via,"traded":bool(px is not None and not placeholder)}
 
+def _cnbc_stale(s):
+    """CNBC 的 last_timedate：盘中/盘后是**时刻**（"4:15 PM EST"），
+    而报价陀旧时是**日期**（"11/18/26 EST"）。只在它是**另一天的日期**时判为陀旧；
+    解析不出日期就不判陀旧（保守方向：宁可留下，不可误杀当日行情）。
+    比的是**美东日期**不是 UTC 日期 —— 盘后 00:30Z 在美东还是前一天。"""
+    if not s: return False
+    m = re.match(r"\s*(\d{1,2})/(\d{1,2})/(\d{2})\b", s)
+    if not m: return False
+    today = datetime.datetime.now(ZoneInfo("America/New_York")).strftime("%m/%d/%y")
+    return "%02d/%02d/%02d" % (int(m.group(1)), int(m.group(2)), int(m.group(3))) != today
+
 def _spot_cnbc():
     """注意：首笔成交前 CNBC 回的 last 是发行价 $83（上一日收盘占位）。
-    只有当 last_timedate 是今天、且 open/high/low 不全为 0 时才认成交。"""
+    只有当 last_timedate 是今天、且 open/high/low 不全为 0 时才认成交。
+
+    2026-11-20 补上了前半句。上面这句 docstring 从第一天就在，而代码只做了
+    `traded = bool(o or h or l)` —— **last_timedate 那一半从没实现过。**
+    后果就落在全项目最关键的那一秒：2026-11-19T16:48:26Z（首笔成交那一秒），
+    CNBC 回的是 open=111.5/high=115.1/low=111.0（当日会话字段已更新）
+    配 last=83.0 与 last_timedate="11/18/26 EST"（**前一天**）。
+    于是 traded=True、price=83.0，而 spot_ant() 的胜出条件是
+    `if r.get("traded") and r.get("price")` —— 它胜出并落盘。
+    那正是铁律 4 说的那个后果（见 data/数据说明.md §9.79、§9.80）。
+    而证据本就在记录里（last_timedate），只是从没被用过。"""
     d,via=_get("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
                "?symbols=ANT&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json",timeout=10)
     q=(((d or {}).get("FormattedQuoteResult") or {}).get("FormattedQuote") or [])
     if not q: return None
     t=q[0]
     o,h,l=_f(t.get("open")),_f(t.get("high")),_f(t.get("low"))
-    traded = bool(o or h or l)
+    stale = _cnbc_stale(t.get("last_timedate"))
+    traded = bool(o or h or l) and not stale
     return {"price":_f(t.get("last")) if traded else None,
             "quoted":_f(t.get("last")),"open":o,"high":h,"low":l,
             "prev_close":_f(t.get("previous_day_closing")),
             "last_timedate":t.get("last_timedate"),
+            "stale_quote":stale,          # 让这个条件在数据里可数，不只在代码里生效
             "src":"cnbc","via":via,"traded":traded}
 
 def spot_ant():
