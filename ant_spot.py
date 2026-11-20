@@ -668,6 +668,35 @@ def audit_constants(now=None):
     return probs
 
 
+def exit_if_session_over(tag):
+    """本场结束后主动退出，让守护用新的 TRADING_DAY 重新拉起。
+
+    **为什么必须退出而不只是告警。** 2026-11-20 的实测教训：
+    7.22 把 TRADING_DAY 改成推导，7.21 加了常驻自检，两者都按设计工作了 ——
+    01:05Z 的预约重启成功，新进程启动时**立刻**报出
+    「本场已于 01:00:00Z 结束，但进程仍在运行 …… 会继续追加到本场的文件里」，
+    而且在 spot.log 里报了 **11 次**。
+
+    **但告警不是执行器。** 它说了，没有任何东西去做。
+    结果 Nov 20 的 2,645 条记录写进了 spot_2026-11-19.jsonl（数据没丢，归属错了）。
+
+    根因：`TRADING_DAY` 在 **import 时算一次**，所以「下次拉起即正确」这句话是对的，
+    **但它只覆盖「新启动」，不覆盖「长跑进程跨过场次边界」** ——
+    而我在 7.22 写「操作后果已消除」时，恰好漏掉了后一种。
+
+    所以本函数：本场结束即 `os._exit(0)`。守护（spot_runner.sh，15 秒一查）会拉起
+    一个新进程，它在 import 时重新推导 TRADING_DAY，于是自动写到新一天的文件。
+    用 `os._exit` 而不是 `sys.exit`：本进程是多线程的，`sys.exit` 只结束调用线程。
+    """
+    if now_s() < POST_CLOSE:
+        return
+    print("[%s] 本场（TRADING_DAY=%s）已于 %s 结束，主动退出，"
+          "由守护用新的 TRADING_DAY 拉起（%s）"
+          % (iso(now_s()), TRADING_DAY, iso(POST_CLOSE), tag), flush=True)
+    sys.stdout.flush()
+    os._exit(0)
+
+
 def log_constant_audit(tag, quiet_ok=True):
     """常量自检并写日志。
 
@@ -703,6 +732,7 @@ def loop_quote():
     n = 0
     while True:
         t_round_start = now_s()
+        exit_if_session_over("quote 循环")
         try:
             rec = snapshot_quote()
             emit(rec)
