@@ -31,7 +31,7 @@
 # │ `spot_ANT_nasdaq` **不走缓存**，指示价序列不受此影响。                    │
 # ╰───────────────────────────────────────────────────────────────────────────╯
 # ╭───────────────────────────────────────────────────────────────────────────╮
-# │ 口径声明追加（7.65，2026-11-20）：采纳另一路第 9 节的 R5                 │
+# │ 口径声明追加（7.65，2026-11-20）：采纳 R5(§8.4, ant_read.py) 的意图，并按 via 逐条实现（严格更强）                 │
 # │                                                                           │
 # │ **`ant_*.jsonl` 里 `via=coingecko` 的永续块一律不用。**                   │
 # │ 成因（另一路查其采集代码）：`binance_via_coingecko()` 里                  │
@@ -52,8 +52,18 @@ import io
 import json
 import os
 
-def _r5_usable(blk):
-    """R5（另一路第 9 节）：via=coingecko 的永续块一律不用。见本文件头部口径声明。"""
+def _drop_coingecko(blk):
+    """按 `via` 逐条剔除 CoinGecko 回退路径的永续块。
+
+    **名字刻意不叫 `_r5_usable`**：它实现的不是 `R5(§8.4, ant_read.py)` 的字面。
+    那条规则写的是「`ant_*` 里的币安一律不用」——**按文件整体排**；
+    本函数按 `via` **逐条**排。两者在 `ant_*` 上恰好等价（那里 socks == 0），
+    **但在 `binance_*` 文件上不等价：字面写法会留下其中 902 条 coingecko。**
+    ⇒ 本实现严格强于字面写法（7.66）。
+
+    成因见头部口径声明：`binance_via_coingecko()` 里 `"mark": x.get("last")`，
+    该路径的 `mark` 是 `last` 的副本，不是任何标记价。
+    """
     return not (isinstance(blk, dict) and blk.get("via") == "coingecko")
 
 
@@ -90,7 +100,7 @@ for p in FILES:
             continue
         for v in VENUES:
             blk = d.get(v)
-            if not _r5_usable(blk):   # R5，见头部声明
+            if not _drop_coingecko(blk):   # 剔除 coingecko 回退，见头部声明（7.66）
                 continue
             if not isinstance(blk, dict):
                 continue
