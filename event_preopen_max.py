@@ -30,13 +30,37 @@
 # │                                                                           │
 # │ `spot_ANT_nasdaq` **不走缓存**，指示价序列不受此影响。                    │
 # ╰───────────────────────────────────────────────────────────────────────────╯
+# ╭───────────────────────────────────────────────────────────────────────────╮
+# │ 口径声明追加（7.65，2026-11-20）：采纳另一路第 9 节的 R5                 │
+# │                                                                           │
+# │ **`ant_*.jsonl` 里 `via=coingecko` 的永续块一律不用。**                   │
+# │ 成因（另一路查其采集代码）：`binance_via_coingecko()` 里                  │
+# │     r = {"last": x.get("last"), "mark": x.get("last"), ...}               │
+# │ ⇒ 该路径的 `mark` 是 `last` 的副本，不是任何标记价；且另有一层 5 秒       │
+# │   `_cg_last` 缓存，与 `_throttled` 的 15 秒是两层独立节流。               │
+# │ 11-19 mini 上 `ant_*` 的币安 14,978 条全是这一路（socks 仅活 41 分钟）。  │
+# │                                                                           │
+# │ **本路此前未应用此规则**：7.56.7 写的「本路本就按 R5 排除」是错的 ——      │
+# │ 本路第 7 节的 R5 是 `bar_ts % 60 == 0`（yahoo 半成品 bar），与币安无关；  │
+# │ 我引的是另一路的 R5，而本路既无该规则也无该过滤。                        │
+# │ 实测影响：盘前观测 50,710 → **44,744**（剔除 5,966 条，11.76%）。         │
+# │ **结论不变**：高于 111.50 仍为 0、最高仍 111.4300（kraken 直取）、        │
+# │ 高于 111.13 仍为 **67** 条（那 67 条全不是 coingecko）——只有 n 与占比变。│
+# ╰───────────────────────────────────────────────────────────────────────────╯
+
 import io
 import json
 import os
 
+def _r5_usable(blk):
+    """R5（另一路第 9 节）：via=coingecko 的永续块一律不用。见本文件头部口径声明。"""
+    return not (isinstance(blk, dict) and blk.get("via") == "coingecko")
+
+
 D = os.path.expanduser("~/ant-convergence/data")
 RESC = os.path.expanduser("~/ant-rescue")
-PRE_LO, PRE_HI = "2026-11-19T00:00:00", "2026-11-19T16:48:00"
+PRE_LO, PRE_HI = "2026-11-19T00:00:00", "2026-11-19T16:48:26"   # 7.44 更正：首笔成交落在 (16:48:21Z, 16:48:26Z]；
+                                     # 此前用的是 yahoo 分钟 bar 的**标签** 16:48:00Z
 VENUES = ["hl_xyz_ANT", "kraken_PF_ANTXUSD", "bitget_ANTUSDT",
           "gate_ANT_USDT", "kucoin_ANTUSDTM", "binance_ANTUSDT"]
 FIELDS = ["mark", "last", "mid", "index"]
@@ -66,6 +90,8 @@ for p in FILES:
             continue
         for v in VENUES:
             blk = d.get(v)
+            if not _r5_usable(blk):   # R5，见头部声明
+                continue
             if not isinstance(blk, dict):
                 continue
             for f in FIELDS:
