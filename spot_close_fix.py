@@ -13,10 +13,27 @@ import json, os, time, urllib.request
 
 UA = "ant-research"
 DATA = os.path.expanduser("~/ant-convergence/data")
-SPOT = os.path.join(DATA, "spot_2026-11-19.jsonl")
-CLOSE = os.path.join(DATA, "close_2026-11-19.json")
+
+# **日期由 ant_spot.py 推导，不再写死。** 2026-11-20 的教训（数据说明 7.33/7.34）：
+# 写死的日期常量在跨日那一刻失效，而失效时产出的东西看起来完全正常。
+# 本脚本若在 Nov 20 被运行，初版会把 Nov 20 的收盘价写进 close_2026-11-19.json
+# 并打上 trading_day="2026-11-19" —— 一个会直接污染收盘价这个最关键数字的错。
+# 用 --day 可覆盖（重跑历史时必须能钉住某一天）。
+import sys as _sys
+sys_path_added = os.path.expanduser("~/ant-convergence")
+if sys_path_added not in _sys.path:
+    _sys.path.insert(0, sys_path_added)
+if "--day" in _sys.argv:
+    DAY = _sys.argv[_sys.argv.index("--day") + 1]
+else:
+    import ant_spot as _S          # 只为复用它的推导，不启动任何循环
+    DAY = _S.TRADING_DAY
+
+SPOT = os.path.join(DATA, "spot_%s.jsonl" % DAY)
+CLOSE = os.path.join(DATA, "close_%s.json" % DAY)
 ISSUE_PRICE = 83.0
-REGULAR_CLOSE = 1795122000  # 2026-11-19T21:00:00Z
+# 同理不写死；若 --day 覆盖了日期，这个值由 ant_spot 的推导给出
+REGULAR_CLOSE = None
 
 
 def get(u):
@@ -40,7 +57,7 @@ def main():
     out = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "t_epoch": round(time.time(), 3),
-        "trading_day": "2026-11-19",
+        "trading_day": DAY,
         "kind": "official_close_final",
         "collector": "spot_close_fix.py",
         "sources": {},
@@ -157,7 +174,7 @@ def main():
     # 向 spot_*.jsonl 追加一条精简记录（不嵌 cross_check，保证单次 write 足够小、
     # 与在跑的 ant_spot.py 的 O_APPEND 写入不会撕裂）
     line = {
-        "ts": out["ts"], "t_epoch": out["t_epoch"], "trading_day": "2026-11-19",
+        "ts": out["ts"], "t_epoch": out["t_epoch"], "trading_day": DAY,
         "kind": "official_close_final", "collector": "spot_close_fix.py",
         "pid": os.getpid(),
         "official_close_usd": out["official_close_usd"],
@@ -168,7 +185,7 @@ def main():
         "cross_check_values": cross,
         "cross_check_unanimous": out["cross_check_unanimous"],
         "supersedes": "kind=official_close（那些记的是 data.previousInfo=83.0，即上一交易日，非本日收盘价）",
-        "detail_file": "data/close_2026-11-19.json",
+        "detail_file": "data/close_%s.json" % DAY,
     }
     with open(SPOT, "a") as f:
         f.write(json.dumps(line, ensure_ascii=False) + "\n")
